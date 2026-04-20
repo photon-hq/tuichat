@@ -1,0 +1,49 @@
+{
+  "name": "tuichat",
+  "version": "0.1.0",
+  "description": "A high-performance TUI chat dev tool for Spectrum-TS agents, powered by OpenTUI React.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.1.100",
+    "@opentui/react": "^0.1.100",
+    "react": "^19.0.0"
+  },
+  "peerDependencies": {
+    "spectrum-ts": "^0.4.0",
+    "typescript": "^5",
+    "zod": "^4"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "spectrum-ts": "^0.4.0",
+    "tsup": "^8.4.0",
+    "zod": "^4.2.1"
+  },
+  "license": "MIT"
+}
