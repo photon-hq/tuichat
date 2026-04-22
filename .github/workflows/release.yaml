@@ -10,6 +10,10 @@ on:
         required: true
         description: "Version tag to create (e.g. v0.1.0)"
 
+concurrency:
+  group: release-${{ github.event.inputs.version || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build (${{ matrix.target }})
@@ -88,6 +92,14 @@ jobs:
           upx --best --lzma "$BIN"
           ls -lh "$BIN"
 
+      - name: Smoke test (native targets only)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          set -euo pipefail
+          BIN="dist/tuichat-${{ matrix.target }}${{ matrix.ext }}"
+          chmod +x "$BIN"
+          "$BIN" --version
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -95,85 +107,36 @@ jobs:
           path: dist/tuichat-${{ matrix.target }}${{ matrix.ext }}
           if-no-files-found: error
 
-  codesign-macos:
-    name: Codesign macOS binaries
-    needs: build
-    runs-on: macos-14
-    env:
-      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
-      DEVELOPER_ID_INSTALLER_NAME: ${{ secrets.DEVELOPER_ID_INSTALLER_NAME }}
-    steps:
-      - name: Download macOS artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: tuichat-darwin-*
-          path: dist
-          merge-multiple: true
-
-      - name: Skip if secrets unavailable
-        id: secrets
-        run: |
-          if [ -z "$APP_PRIVATE_KEY" ] || [ -z "$DEVELOPER_ID_INSTALLER_NAME" ]; then
-            echo "[codesign] org secrets not present; skipping" >&2
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skipped=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Import signing cert
-        if: steps.secrets.outputs.skipped == 'false'
-        run: |
-          set -euo pipefail
-          KEYCHAIN_PATH="$RUNNER_TEMP/tuichat.keychain"
-          KEYCHAIN_PW="$(openssl rand -base64 32)"
-          P12_PATH="$RUNNER_TEMP/cert.p12"
-          echo "$APP_PRIVATE_KEY" | base64 -d > "$P12_PATH"
-          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
-          security import "$P12_PATH" -k "$KEYCHAIN_PATH" -P "" \
-            -T /usr/bin/codesign -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" \
-            $(security list-keychains -d user | tr -d '"')
-          rm -f "$P12_PATH"
-
-      - name: Codesign
-        if: steps.secrets.outputs.skipped == 'false'
-        run: |
-          set -euo pipefail
-          for BIN in dist/tuichat-darwin-arm64 dist/tuichat-darwin-x64; do
-            chmod +x "$BIN"
-            codesign --force --timestamp --options runtime \
-              --sign "$DEVELOPER_ID_INSTALLER_NAME" "$BIN"
-            codesign --verify --verbose=2 "$BIN"
-          done
-
-      - name: Re-upload darwin-arm64 (signed, overwrite)
-        uses: actions/upload-artifact@v4
-        with:
-          name: tuichat-darwin-arm64
-          path: dist/tuichat-darwin-arm64
-          if-no-files-found: error
-          overwrite: true
-
-      - name: Re-upload darwin-x64 (signed, overwrite)
-        uses: actions/upload-artifact@v4
-        with:
-          name: tuichat-darwin-x64
-          path: dist/tuichat-darwin-x64
-          if-no-files-found: error
-          overwrite: true
-
   release:
     name: Publish GitHub Release
-    needs: [build, codesign-macos]
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v5
+
+      - name: Check for App credentials
+        id: has-app
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          if [ -n "$APP_ID" ] && [ -n "$APP_PRIVATE_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate App Token
+        id: app-token
+        if: steps.has-app.outputs.present == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -200,12 +163,21 @@ jobs:
 
       - name: Create release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           VERSION="${{ steps.version.outputs.version }}"
           cd dist
-          gh release create "$VERSION" \
-            --title "$VERSION" \
-            --generate-notes \
-            tuichat-* SHA256SUMS
+          # If invoked via workflow_dispatch, create the tag now so the release has something to point at.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            gh release create "$VERSION" \
+              --target "$GITHUB_SHA" \
+              --title "$VERSION" \
+              --generate-notes \
+              tuichat-* SHA256SUMS
+          else
+            gh release create "$VERSION" \
+              --title "$VERSION" \
+              --generate-notes \
+              tuichat-* SHA256SUMS
+          fi
