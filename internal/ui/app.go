@@ -310,9 +310,28 @@ func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) onInputChange() {
+	id := m.Store.ActiveChatID()
+
+	// Fallback for terminals that deliver drag-drop as raw keystrokes rather
+	// than bracketed paste (VS Code, some older terminals): scan the current
+	// input for quoted paths that resolve to real files and promote them to
+	// pending attachments.
+	if id != "" {
+		if ex := drop.Extract(m.input.Value()); len(ex.Paths) > 0 {
+			for _, p := range ex.Paths {
+				m.Store.AddPendingAttachment(id, store.PendingAttachment{
+					Path: p.Path,
+					Name: p.Name,
+					Size: p.Size,
+				})
+			}
+			m.input.SetValue(ex.Cleaned)
+		}
+	}
+
 	m.prefix = m.input.Value()
 	m.tabIndex = 0
-	if id := m.Store.ActiveChatID(); id != "" {
+	if id != "" {
 		m.Store.SetInputDraft(id, m.prefix)
 	}
 }
