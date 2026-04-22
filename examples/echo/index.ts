@@ -1,9 +1,9 @@
 import { attachment, custom, Spectrum, text } from "spectrum-ts";
-import { tuichat } from "tuichat";
+import { terminalTui } from "tuichat-spectrum-ts";
 
 const app = await Spectrum({
   providers: [
-    tuichat.config({
+    terminalTui.config({
       commands: [
         { name: "/attach", description: "send a demo attachment" },
         { name: "/custom", description: "send a demo custom payload" },

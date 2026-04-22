@@ -1,14 +1,11 @@
 {
-  "name": "tuichat",
+  "name": "tuichat-spectrum-ts",
   "version": "0.1.0",
-  "description": "A standalone, language-agnostic TUI chat subprocess for Spectrum adapters. Powered by OpenTUI React; speaks JSON-RPC 2.0 over TCP.",
+  "description": "Spectrum-TS provider that drives the standalone tuichat TUI over JSON-RPC.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "bin": {
-    "tuichat": "./dist/bin/tuichat.js"
-  },
   "files": [
     "dist"
   ],
@@ -33,13 +30,17 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@opentui/core": "0.1.101",
-    "@opentui/react": "0.1.101",
-    "react": "^19.0.0"
+    "tuichat": "workspace:*"
+  },
+  "peerDependencies": {
+    "spectrum-ts": "^0.4.0",
+    "typescript": "^5",
+    "zod": "^4"
   },
   "devDependencies": {
-    "@types/react": "^19.0.0",
-    "tsup": "^8.4.0"
+    "spectrum-ts": "^0.4.0",
+    "tsup": "^8.4.0",
+    "zod": "^4.2.1"
   },
   "license": "MIT"
 }

@@ -1,4 +1,4 @@
-import type { Content } from "spectrum-ts";
+import type { Content } from "./content";
 
 export interface CommandDef {
   name: string;

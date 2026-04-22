@@ -7,6 +7,7 @@
   },
   "dependencies": {
     "spectrum-ts": "^0.4.0",
-    "tuichat": "workspace:*"
+    "tuichat": "workspace:*",
+    "tuichat-spectrum-ts": "workspace:*"
   }
 }
