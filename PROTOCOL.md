@@ -15,18 +15,17 @@ Language-agnostic JSON-RPC 2.0 over TCP/localhost. The adapter (per-language Spe
 
 ## Lifecycle
 
-1. Adapter spawns `tuichat` as a subprocess (no args required).
-2. tuichat binds `127.0.0.1:0`, then prints exactly one line to stdout:
-   ```json
-   {"ready":true,"port":54321,"protocolVersion":"1"}
-   ```
-   Followed by a single `\n`. Adapter must read one line and parse JSON before doing anything else with the subprocess's stdout (after this, tuichat may take over stdout for the TUI alternate screen).
-3. Adapter dials `127.0.0.1:<port>`.
-4. Adapter sends `initialize` request; tuichat responds. TUI renderer boots.
-5. Request/notification traffic flows either direction.
-6. Adapter sends `shutdown` request, then closes the socket, then `SIGTERM`s the subprocess.
+1. Adapter binds an ephemeral TCP port on `127.0.0.1`.
+2. Adapter spawns `tuichat --connect 127.0.0.1:<port>` as a subprocess with `stdio: "inherit"` so the TUI owns the terminal directly.
+3. tuichat dials the adapter's listener.
+4. Adapter accepts the connection and stops listening.
+5. Adapter sends `initialize` request; tuichat responds. TUI renderer boots.
+6. Request/notification traffic flows either direction.
+7. Adapter sends `shutdown` request, then closes the socket, then `SIGTERM`s the subprocess.
 
-If the socket closes without `shutdown`, tuichat exits non-zero.
+If the socket closes without `shutdown`, tuichat exits non-zero. If tuichat fails to dial within 5s, the adapter aborts startup.
+
+The adapter-listens / tuichat-dials direction (vs. the reverse) is deliberate: `stdio: "inherit"` lets OpenTUI access the real terminal for rendering and mouse tracking, which it can't do if the adapter has captured stdout via a pipe to read a ready banner.
 
 ## JSON-RPC envelope
 

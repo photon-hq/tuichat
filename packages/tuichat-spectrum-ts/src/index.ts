@@ -1,8 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
-import { connect, type Socket } from "node:net";
+import { createServer, type Socket } from "node:net";
 import { createInterface, type Interface as Readline } from "node:readline";
-import type { Readable } from "node:stream";
 import z from "zod";
 import {
   type AnyPlatformDef,
@@ -14,7 +13,6 @@ import {
   getBinaryPath,
   MessageDecoder,
   type ProtocolContent,
-  type ReadyBanner,
   RpcSession,
 } from "tuichat";
 
@@ -37,7 +35,7 @@ type AdapterClient = RichAdapterClient | PlainAdapterClient;
 
 interface RichAdapterClient {
   readonly mode: "rich";
-  readonly proc: ChildProcess & { stdout: Readable };
+  readonly proc: ChildProcess;
   readonly socket: Socket;
   readonly session: RpcSession;
   readonly messages: AsyncIterable<ProtocolMessageNotification>;
@@ -60,12 +58,50 @@ async function spawnAndConnect(options: {
   commands?: { name: string; description?: string }[];
 }): Promise<RichAdapterClient> {
   const binary = getBinaryPath();
-  const proc = spawn("bun", [binary], {
-    stdio: ["inherit", "pipe", "inherit"],
-  }) as ChildProcess & { stdout: Readable };
 
-  const banner = await readReadyBanner(proc);
-  const socket = await dial("127.0.0.1", banner.port);
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port: 0 }, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const addr = server.address();
+  if (!addr || typeof addr === "string") {
+    server.close();
+    throw new Error("failed to bind adapter listener");
+  }
+  const host = "127.0.0.1";
+  const port = addr.port;
+
+  const socketPromise = new Promise<Socket>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      server.close();
+      reject(new Error("tuichat subprocess did not connect within 5s"));
+    }, 5000);
+    server.once("connection", (sock) => {
+      clearTimeout(timeout);
+      server.close();
+      resolve(sock);
+    });
+    server.once("error", (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+  });
+
+  const proc = spawn("bun", [binary, "--connect", `${host}:${port}`], {
+    stdio: "inherit",
+  });
+
+  proc.once("exit", (code) => {
+    if (code !== 0 && code !== null) {
+      process.stderr.write(`[tuichat] subprocess exited with code ${code}\n`);
+    }
+  });
+
+  const socket = await socketPromise;
   const session = new RpcSession(socket);
 
   const pushQueue: ProtocolMessageNotification[] = [];
@@ -114,44 +150,6 @@ async function spawnAndConnect(options: {
   });
 
   return { mode: "rich", proc, socket, session, messages: asyncIter };
-}
-
-async function readReadyBanner(
-  proc: ChildProcess & { stdout: Readable }
-): Promise<ReadyBanner> {
-  return new Promise<ReadyBanner>((resolve, reject) => {
-    let buf = "";
-    const onData = (chunk: Buffer) => {
-      buf += chunk.toString("utf8");
-      const nl = buf.indexOf("\n");
-      if (nl < 0) return;
-      const line = buf.slice(0, nl);
-      try {
-        const banner = JSON.parse(line) as ReadyBanner;
-        if (!banner.ready || typeof banner.port !== "number") {
-          throw new Error(`bad banner: ${line}`);
-        }
-        proc.stdout.off("data", onData);
-        resolve(banner);
-      } catch (err) {
-        reject(err);
-      }
-    };
-    proc.stdout.on("data", onData);
-    proc.once("exit", (code) => {
-      reject(new Error(`tuichat exited before ready (code=${code})`));
-    });
-  });
-}
-
-async function dial(host: string, port: number): Promise<Socket> {
-  return new Promise<Socket>((resolve, reject) => {
-    const sock = connect({ host, port }, () => {
-      sock.off("error", reject);
-      resolve(sock);
-    });
-    sock.once("error", reject);
-  });
 }
 
 function createPlainClient(): PlainAdapterClient {
@@ -444,5 +442,4 @@ export const terminalTui = definePlatform("terminal-tui", {
 export const terminalTuiProvider: Platform<AnyPlatformDef> =
   terminalTui as unknown as Platform<AnyPlatformDef>;
 
-export type { ReadyBanner } from "tuichat";
 export { MessageDecoder };

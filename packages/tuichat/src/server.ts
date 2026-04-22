@@ -1,4 +1,4 @@
-import { createServer as createTcpServer, type Socket } from "node:net";
+import { connect } from "node:net";
 import {
   createTuichatClient,
   destroyTuichatClient,
@@ -14,7 +14,6 @@ import {
   type InitializeResult,
   PROTOCOL_VERSION,
   type ReactParams,
-  type ReadyBanner,
   type ReplyParams,
   type SendParams,
   type SendResult,
@@ -152,65 +151,41 @@ function installRpcHandlers(active: ActiveSession): void {
 }
 
 export interface ServerOptions {
-  host?: string;
+  host: string;
+  port: number;
 }
 
 export interface ServerHandle {
-  port: number;
   close: () => Promise<void>;
 }
 
 export async function startServer(
-  options: ServerOptions = {}
+  options: ServerOptions
 ): Promise<ServerHandle> {
-  const host = options.host ?? "127.0.0.1";
-  const server = createTcpServer();
-  let acceptedOnce = false;
-
-  server.on("connection", (socket: Socket) => {
-    if (acceptedOnce) {
-      socket.destroy();
-      return;
+  const socket = await new Promise<import("node:net").Socket>(
+    (resolve, reject) => {
+      const s = connect({ host: options.host, port: options.port }, () => {
+        s.off("error", reject);
+        resolve(s);
+      });
+      s.once("error", reject);
     }
-    acceptedOnce = true;
-    server.close();
+  );
 
-    const session = new RpcSession(socket);
-    const active: ActiveSession = { session, client: null };
-    installRpcHandlers(active);
+  const session = new RpcSession(socket);
+  const active: ActiveSession = { session, client: null };
+  installRpcHandlers(active);
 
-    session.onClosed(() => {
-      if (active.client) {
-        void destroyTuichatClient(active.client);
-      }
-      setImmediate(() => process.exit(0));
-    });
+  session.onClosed(() => {
+    if (active.client) {
+      void destroyTuichatClient(active.client);
+    }
+    setImmediate(() => process.exit(0));
   });
-
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen({ host, port: 0 }, () => {
-      server.off("error", reject);
-      resolve();
-    });
-  });
-
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    throw new Error("failed to get server address");
-  }
-
-  const banner: ReadyBanner = {
-    ready: true,
-    port: address.port,
-    protocolVersion: PROTOCOL_VERSION,
-  };
-  process.stdout.write(`${JSON.stringify(banner)}\n`);
 
   return {
-    port: address.port,
     close: async () => {
-      server.close();
+      session.close();
     },
   };
 }

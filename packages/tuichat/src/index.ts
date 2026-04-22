@@ -32,7 +32,6 @@ export {
   type InitializeParams,
   type InitializeResult,
   type MessageNotification,
-  type ReadyBanner,
   type SendParams,
   type SendResult,
 } from "./protocol/types";

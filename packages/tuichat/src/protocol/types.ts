@@ -1,11 +1,5 @@
 export const PROTOCOL_VERSION = "1" as const;
 
-export interface ReadyBanner {
-  ready: true;
-  port: number;
-  protocolVersion: typeof PROTOCOL_VERSION;
-}
-
 export type Content =
   | { type: "text"; text: string }
   | {

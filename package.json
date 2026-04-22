@@ -8,9 +8,9 @@
     "examples/*"
   ],
   "scripts": {
-    "build": "bun --filter 'tuichat' run build",
-    "typecheck": "bun --filter '*' run typecheck",
-    "example:echo": "bun --filter '@tuichat/example-echo' run start"
+    "build": "bun --filter='./packages/*' run build",
+    "typecheck": "bun --filter='./packages/*' run typecheck",
+    "example:echo": "bun --filter='@tuichat/example-echo' run start"
   },
   "devDependencies": {
     "@opentui/core": "0.1.101",
