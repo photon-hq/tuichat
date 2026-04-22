@@ -144,7 +144,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	case "ctrl+l":
-		if id := m.Store.ActiveChatID(); id != "" {
+		if id := m.Store.ActiveChatID(); id != "" && id != store.SystemChatID {
 			m.Store.AppendSystem(id, "screen cleared")
 			m.refreshViewport()
 		}
@@ -173,7 +173,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handlePaste(raw string) (tea.Model, tea.Cmd) {
 	id := m.Store.ActiveChatID()
-	if id == "" {
+	if id == "" || id == store.SystemChatID {
 		return m, nil
 	}
 	path := drop.ParsePath(raw)
@@ -249,7 +249,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 	id := m.Store.ActiveChatID()
-	if id == "" {
+	if id == "" || id == store.SystemChatID {
 		return m, nil
 	}
 	raw := strings.TrimSpace(m.input.Value())
@@ -316,7 +316,7 @@ func (m *Model) onInputChange() {
 	// than bracketed paste (VS Code, some older terminals): scan the current
 	// input for quoted paths that resolve to real files and promote them to
 	// pending attachments.
-	if id != "" {
+	if id != "" && id != store.SystemChatID {
 		if ex := drop.Extract(m.input.Value()); len(ex.Paths) > 0 {
 			for _, p := range ex.Paths {
 				m.Store.AddPendingAttachment(id, store.PendingAttachment{
@@ -496,6 +496,21 @@ func (m *Model) renderInputContainer(chat store.ChatState, hasActive bool) strin
 	if innerWidth < 10 {
 		innerWidth = 10
 	}
+
+	// System chat is read-only: replace the input + chips area with a hint.
+	if hasActive && chat.ID == store.SystemChatID {
+		hint := lipgloss.NewStyle().
+			Foreground(m.theme.SystemColor).
+			Italic(true).
+			Render("— system log (read-only) —")
+		return lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(m.theme.BorderColor).
+			Padding(0, 1).
+			Width(m.width - SidebarWidth - 2).
+			Render(hint)
+	}
+
 	var rows []string
 
 	if hasActive && len(chat.PendingAttachments) > 0 {
@@ -607,15 +622,21 @@ func zoneMarkSidebar(theme Theme, chats []store.ChatState, activeID string, heig
 			arrowStyle = lipgloss.NewStyle().Foreground(theme.PromptColor)
 			nameStyle = lipgloss.NewStyle().Foreground(theme.UserColor)
 		}
-		id := c.ID
-		if len(id) > SidebarWidth-4 {
-			id = id[:SidebarWidth-5] + "…"
+		name := c.ID
+		if name == store.SystemChatID {
+			name = "system"
+			if !selected {
+				nameStyle = lipgloss.NewStyle().Foreground(theme.SystemColor)
+			}
+		}
+		if len(name) > SidebarWidth-4 {
+			name = name[:SidebarWidth-5] + "…"
 		}
 		arrow := "  "
 		if selected {
 			arrow = "› "
 		}
-		raw := arrowStyle.Render(arrow) + nameStyle.Render(id)
+		raw := arrowStyle.Render(arrow) + nameStyle.Render(name)
 		marked := zone.Mark(ZoneSidebarRowPrefix+c.ID, raw)
 		rows = append(rows, lipgloss.NewStyle().PaddingLeft(1).Width(SidebarWidth-1).Render(marked))
 	}

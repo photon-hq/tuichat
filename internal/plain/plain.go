@@ -28,6 +28,23 @@ const plainSpaceID = "terminal"
 func Run(session *protocol.Session) error {
 	var done sync.WaitGroup
 
+	// Log notifications from the adapter's console-hijack: surface to stderr so
+	// they don't collide with the stdout protocol stream users see in plain mode.
+	session.HandleNotifications(func(method string, raw json.RawMessage) {
+		if method != "log" {
+			return
+		}
+		var p protocol.LogNotification
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return
+		}
+		level := p.Level
+		if level == "" {
+			level = "log"
+		}
+		fmt.Fprintf(os.Stderr, "[%s] %s\n", level, p.Text)
+	})
+
 	session.HandleRequests(func(method string, raw json.RawMessage) (any, error) {
 		switch method {
 		case "initialize":

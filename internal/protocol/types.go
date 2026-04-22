@@ -85,6 +85,13 @@ type MessageNotification struct {
 	Timestamp string  `json:"timestamp"`
 }
 
+// LogNotification carries agent-side console output into the UI. Client → server.
+// Level is one of: "log", "info", "warn", "error", "debug".
+type LogNotification struct {
+	Level string `json:"level"`
+	Text  string `json:"text"`
+}
+
 // RPC envelope types. ID is any (number or string) per JSON-RPC 2.0.
 
 type Request struct {

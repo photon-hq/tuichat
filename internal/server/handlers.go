@@ -120,6 +120,23 @@ func (s *Server) HandleRequest(method string, raw json.RawMessage) (any, error) 
 	return nil, errors.New("unknown method: " + method)
 }
 
+// HandleNotification dispatches an incoming notification (no response).
+func (s *Server) HandleNotification(method string, raw json.RawMessage) {
+	switch method {
+	case "log":
+		var p protocol.LogNotification
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return
+		}
+		level := p.Level
+		if level == "" {
+			level = "log"
+		}
+		s.Store.AppendLog(level, p.Text)
+		s.notifyStoreChanged()
+	}
+}
+
 // PumpUserInput blocks reading from the store's input queue and emits a
 // `message` notification for each user-submitted input. Runs in a goroutine.
 func (s *Server) PumpUserInput() {

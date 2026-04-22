@@ -129,6 +129,14 @@ params: null
 result: null
 ```
 
+## Notifications (client → server)
+
+### `log`
+Notification. Forwards agent-side console output into tuichat's UI. The binary appends each call to a pinned `__system__` chat (rich mode) or writes `[level] text` to stderr (plain mode). Intended to be emitted by the adapter after monkeypatching `console.log` / `console.info` / `console.warn` / `console.error` / `console.debug` so agent-side logging doesn't corrupt the shared TTY.
+```ts
+params: { level: "log" | "info" | "warn" | "error" | "debug"; text: string }
+```
+
 ## Notifications (server → client)
 
 ### `message`

@@ -18,6 +18,10 @@ import (
 
 const ScrollbackCap = 2000
 
+// SystemChatID is the pinned, always-present chat that receives agent-side
+// console output forwarded via the `log` protocol notification.
+const SystemChatID = "__system__"
+
 type Role string
 
 const (
@@ -102,18 +106,12 @@ func (s *Store) SetCommands(cmds []CommandDef) {
 	s.commands = append([]CommandDef(nil), cmds...)
 }
 
-// SortedChats returns chats ordered by lastActivityAt descending.
+// SortedChats returns the system chat pinned first, then user chats ordered
+// by lastActivityAt descending.
 func (s *Store) SortedChats() []ChatState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]ChatState, 0, len(s.chats))
-	for _, c := range s.chats {
-		out = append(out, *c)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].LastActivityAt.After(out[j].LastActivityAt)
-	})
-	return out
+	return s.sortedLocked()
 }
 
 func (s *Store) ActiveChat() (ChatState, bool) {
@@ -191,12 +189,21 @@ func (s *Store) CycleActiveChat(delta int) {
 
 func (s *Store) sortedLocked() []ChatState {
 	out := make([]ChatState, 0, len(s.chats))
+	var system *ChatState
 	for _, c := range s.chats {
+		if c.ID == SystemChatID {
+			cp := *c
+			system = &cp
+			continue
+		}
 		out = append(out, *c)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].LastActivityAt.After(out[j].LastActivityAt)
 	})
+	if system != nil {
+		out = append([]ChatState{*system}, out...)
+	}
 	return out
 }
 
@@ -219,6 +226,19 @@ func (s *Store) AppendSystem(chatID, text string) {
 	defer s.mu.Unlock()
 	s.ensureChatLocked(chatID)
 	s.appendLocked(chatID, RoleSystem, protocol.Content{Type: "text", Text: text}, "", "")
+}
+
+// AppendLog appends agent-side console output to the pinned system chat,
+// creating it lazily on the first call. Does not steal focus from the active
+// chat — the system chat only becomes active if the user navigates to it.
+func (s *Store) AppendLog(level, text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.chats[SystemChatID]; !ok {
+		s.chats[SystemChatID] = emptyChat(SystemChatID)
+	}
+	body := "[" + level + "] " + text
+	s.appendLocked(SystemChatID, RoleSystem, protocol.Content{Type: "text", Text: body}, "", "")
 }
 
 func (s *Store) SetTyping(chatID string, v bool) {

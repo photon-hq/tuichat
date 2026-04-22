@@ -44,6 +44,10 @@ func renderEntry(theme Theme, e store.LogEntry, allEntries []store.LogEntry, wid
 	var body string
 	switch e.Content.Type {
 	case "text":
+		if e.Role == "system" {
+			body = renderLogText(theme, e.Content.Text)
+			break
+		}
 		textStyle := lipgloss.NewStyle().Foreground(theme.InputColor)
 		linkStyle := lipgloss.NewStyle().Foreground(theme.PromptColor).Underline(true)
 		body = LinkifyText(e.Content.Text, textStyle, linkStyle)
@@ -86,6 +90,35 @@ func renderEntry(theme Theme, e store.LogEntry, allEntries []store.LogEntry, wid
 
 	_ = width // not used for hard-wrapping yet; terminal handles soft wrap
 	return main
+}
+
+// renderLogText colorizes a system-role text entry. If the text begins with a
+// "[level] " prefix (from the agent console-hijack path), the level token is
+// colored by severity and the remaining body is rendered in the system color.
+func renderLogText(theme Theme, text string) string {
+	bodyStyle := lipgloss.NewStyle().Foreground(theme.SystemColor)
+	if !strings.HasPrefix(text, "[") {
+		return bodyStyle.Render(text)
+	}
+	end := strings.Index(text, "] ")
+	if end < 0 {
+		return bodyStyle.Render(text)
+	}
+	level := text[1:end]
+	rest := text[end+2:]
+	levelColor := theme.SystemColor
+	switch level {
+	case "error":
+		levelColor = lipgloss.Color("#f87171")
+	case "warn":
+		levelColor = lipgloss.Color("#fbbf24")
+	case "info":
+		levelColor = lipgloss.Color("#60a5fa")
+	case "debug":
+		levelColor = lipgloss.Color("#9ca3af")
+	}
+	levelStyle := lipgloss.NewStyle().Foreground(levelColor).Bold(true)
+	return levelStyle.Render("["+level+"]") + " " + bodyStyle.Render(rest)
 }
 
 func renderAttachmentLabel(theme Theme, e store.LogEntry, kind string) string {

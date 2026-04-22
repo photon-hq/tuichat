@@ -90,6 +90,9 @@ func runRich(session *protocol.Session) error {
 	session.HandleRequests(func(method string, params json.RawMessage) (any, error) {
 		return srv.HandleRequest(method, params)
 	})
+	session.HandleNotifications(func(method string, params json.RawMessage) {
+		srv.HandleNotification(method, params)
+	})
 	session.OnClosed(func() {
 		program.Quit()
 	})
