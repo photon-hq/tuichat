@@ -131,7 +131,7 @@ func (s *Server) PumpUserInput() {
 		_ = s.Session.Notify("message", protocol.MessageNotification{
 			ID:        newID(),
 			SpaceID:   chatID,
-			SenderID:  "terminal-tui-user",
+			SenderID:  "terminal-user",
 			Content:   outgoingContent(content),
 			Timestamp: iso(),
 		})

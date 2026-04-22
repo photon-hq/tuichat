@@ -137,7 +137,7 @@ Notification. Fires whenever the user submits in any chat.
 params: {
   id: string;
   spaceId: string;
-  senderId: string;      // always "terminal-tui-user"
+  senderId: string;      // always "terminal-user"
   content: Content;
   timestamp: string;
 }
@@ -147,6 +147,16 @@ params: {
 Notification. Fires when the user creates a new chat (Ctrl+N or `/new`). Adapter may track this to keep its own chat-id mirror.
 ```ts
 params: { id: string; createdAt: string }
+```
+
+### `streamEnd`
+Notification. Fires when the user-input stream is exhausted — in practice, when tuichat is running in its non-TTY plain-mode fallback and stdin reaches EOF. Adapters should terminate their `message`-yielding iterator so the agent's `for await` loop exits cleanly.
+
+Crucially, the server does **not** close the socket on its own after sending `streamEnd`. In-flight `send` responses still need to flow as the agent winds down. The server waits for the adapter to send `shutdown` (or closes the socket from its side) before exiting; a 30-second safety timeout in the server prevents zombie subprocesses if the adapter hangs.
+
+Not fired in rich TUI mode — the renderer never "ends" without an explicit `shutdown` from the adapter.
+```ts
+params: null
 ```
 
 ## Versioning

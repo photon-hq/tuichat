@@ -91,14 +91,23 @@ func Run(session *protocol.Session) error {
 		}
 	}()
 
-	// Wait for either the RPC session to close (agent sent shutdown / died)
-	// or stdin to drain. If stdin drains first, give a grace period so any
-	// in-flight `send` responses can flush before we tear down the socket.
+	// When stdin drains, tell the adapter no more user input is coming — the
+	// adapter's `messages` iterator then yields done, the agent's `for await`
+	// loop exits, and eventually the adapter issues `shutdown`. We do NOT
+	// close the session ourselves here: in-flight `send` responses (including
+	// any triggered by the agent's final for-await iteration) must still flow.
 	select {
 	case <-closed:
+		// Adapter closed us (usually via shutdown RPC). Normal exit.
 	case <-inputDone:
-		time.Sleep(500 * time.Millisecond)
-		session.Close()
+		_ = session.Notify("streamEnd", nil)
+		// Block until the adapter closes the session via shutdown. A hard
+		// timeout prevents zombie subprocesses if the agent misbehaves.
+		select {
+		case <-closed:
+		case <-time.After(30 * time.Second):
+			session.Close()
+		}
 	}
 	done.Wait()
 	return nil
