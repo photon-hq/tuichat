@@ -10,7 +10,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	zone "github.com/lrstanley/bubblezone"
+	"golang.org/x/term"
 
+	"github.com/photon-hq/tuichat/internal/plain"
 	"github.com/photon-hq/tuichat/internal/protocol"
 	"github.com/photon-hq/tuichat/internal/server"
 	"github.com/photon-hq/tuichat/internal/store"
@@ -38,9 +40,19 @@ func main() {
 	}
 }
 
+func isInteractive() bool {
+	if os.Getenv("TUICHAT_FORCE_PLAIN") == "1" {
+		return false
+	}
+	if os.Getenv("TUICHAT_FORCE_TUI") == "1" {
+		return true
+	}
+	return term.IsTerminal(int(os.Stdin.Fd())) &&
+		term.IsTerminal(int(os.Stdout.Fd()))
+}
+
 func run(addr string) error {
-	idx := strings.LastIndex(addr, ":")
-	if idx < 0 {
+	if !strings.Contains(addr, ":") {
 		return fmt.Errorf("invalid --connect value: %s", addr)
 	}
 	conn, err := net.Dial("tcp", addr)
@@ -48,10 +60,19 @@ func run(addr string) error {
 		return fmt.Errorf("dial %s: %w", addr, err)
 	}
 
+	session := protocol.NewSession(conn)
+
+	if !isInteractive() {
+		return plain.Run(session)
+	}
+
+	return runRich(session)
+}
+
+func runRich(session *protocol.Session) error {
 	zone.NewGlobal()
 
 	st := store.New(nil)
-	session := protocol.NewSession(conn)
 	model := ui.NewModel(st)
 
 	program := tea.NewProgram(
@@ -75,9 +96,7 @@ func run(addr string) error {
 
 	go srv.PumpUserInput()
 	go func() {
-		if err := session.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "[tuichat] session ended: %v\n", err)
-		}
+		_ = session.Run()
 	}()
 
 	defer func() {

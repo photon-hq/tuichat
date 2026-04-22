@@ -1,103 +1,68 @@
 # tuichat
 
-A high-performance TUI chat provider for [Spectrum-TS](https://github.com/photon-hq/spectrum-ts) agents, powered by [OpenTUI React](https://opentui.com/).
+A standalone, language-agnostic rich TUI chat subprocess for [Spectrum](https://docs.photon.codes/spectrum-ts) agents. Powered by [Bubble Tea](https://github.com/charmbracelet/bubbletea) + [Lip Gloss](https://github.com/charmbracelet/lipgloss) + [Bubble Zone](https://github.com/lrstanley/bubblezone) + [Mosaic](https://github.com/charmbracelet/x/tree/main/mosaic). Speaks [JSON-RPC 2.0 over TCP](./PROTOCOL.md) so any Spectrum SDK adapter (TypeScript, Python, Go, Rust, …) can drive it with no runtime dependencies.
 
-A richer alternative to the built-in `terminal` provider — multi-chat sidebar, drag-drop attachments, floating image previews (Kitty graphics), slash-command palette, mouse hover. Falls back to plain readline when stdout isn't a TTY so agents still work over pipes and in CI.
+## Why a separate process?
+
+Every Spectrum SDK needs a polished terminal UI, and reimplementing one in each language would waste effort. tuichat is the shared UI — a small compiled binary downloaded on first use by the SDK's adapter. The adapter handles provider-shape conversion; tuichat handles rendering, input, images, keybindings.
+
+## Features
+
+- Multi-chat sidebar with click-to-switch + `Ctrl+N` / `Ctrl+J` / `Ctrl+K` navigation
+- Slash-command palette with `/new`, `/help`, plus adapter-registered commands
+- Drag-and-drop file attachments (bracketed-paste + quoted-path fallback)
+- Inline image preview: Kitty graphics protocol where available (Kitty, Ghostty, WezTerm), half-block Mosaic fallback elsewhere
+- OSC 8 hyperlinks for URLs in messages + attachment filenames
+- 2000-entry scrollback cap per chat with "… N older messages dropped" marker
+- Scrollable log, sticky-bottom, typing indicator, per-chat input drafts
 
 ## Install
 
-```bash
-bun add tuichat
+Download the pre-built binary for your platform from the [latest release](https://github.com/photon-hq/tuichat/releases/latest):
+
+- `tuichat-darwin-arm64` (Apple Silicon)
+- `tuichat-darwin-x64` (Intel macOS)
+- `tuichat-linux-x64`
+- `tuichat-linux-arm64`
+- `tuichat-windows-x64.exe`
+
+Verify with `SHA256SUMS` in the same release, `chmod +x`, move to `PATH`.
+
+If you hit a Gatekeeper warning on first run on macOS: `xattr -d com.apple.quarantine /path/to/tuichat`. Notarization coming soon.
+
+You normally don't run `tuichat` directly — your Spectrum SDK's terminal adapter spawns it for you.
+
+## Usage (for humans, mostly for debugging)
+
+```sh
+# Start an adapter somewhere that listens on 127.0.0.1:12345
+# Then:
+tuichat --connect 127.0.0.1:12345
 ```
 
-`spectrum-ts` and `zod` are peer dependencies.
+See [PROTOCOL.md](./PROTOCOL.md) for the wire contract.
 
-## Usage
+## Build from source
 
-```ts
-import { Spectrum } from "spectrum-ts";
-import { tuichat } from "tuichat";
+Requires Go ≥ 1.24 and [Task](https://taskfile.dev/) (`brew install go-task`).
 
-const app = await Spectrum({
-  providers: [
-    tuichat.config({
-      commands: [
-        { name: "/attach", description: "send a demo attachment" },
-      ],
-    }),
-  ],
-});
-
-for await (const [space, message] of app.messages) {
-  if (message.content.type !== "text") continue;
-  await space.responding(async () => {
-    await space.send(`echo: ${message.content.text}`);
-  });
-}
+```sh
+task build          # dist/tuichat (dev build, with symbols)
+task build:release  # dist/tuichat (stripped)
+task cross          # dist/tuichat-<target> for all 5 targets
+task check          # fmt + vet + build
 ```
-
-Each Spectrum `space` becomes a chat in the sidebar. Create chats by pressing `Ctrl+N`, typing `/new`, or having the agent call `tuichat(app).space({ id: "whatever" })`.
-
-## Keybindings
-
-| Key                | Action                                  |
-| ------------------ | --------------------------------------- |
-| `Ctrl+N`           | New chat                                |
-| `Ctrl+J` / `Ctrl+K`| Cycle chats (down / up)                 |
-| `Ctrl+L`           | Clear active chat (marker only)         |
-| `Ctrl+D`           | Toggle OpenTUI debug overlay            |
-| `Ctrl+C`           | Exit                                    |
-| `Tab`              | Complete slash command                  |
-| `Esc`              | Cancel input + drop pending attachments |
-| Drag a file in     | Attach (or paste the quoted path)       |
-| Hover image row    | Floating preview (Kitty/Ghostty only)   |
-
-Type `/help` inside the TUI to see the same reference.
-
-## Slash commands
-
-| Command | Behavior                                         |
-| ------- | ------------------------------------------------ |
-| `/new`  | Start a new chat (same as `Ctrl+N`)              |
-| `/help` | Dump keybindings + env vars into the active chat |
-
-Plus any commands you register via `tuichat.config({ commands: […] })`; these reach your agent's `for await` loop as normal text messages.
 
 ## Environment variables
 
-| Variable                     | Effect                                                              |
-| ---------------------------- | ------------------------------------------------------------------- |
-| `TUICHAT_FORCE_TUI=1`        | Force rich TUI even without a TTY (tests, tmux/screen edge cases)   |
-| `TUICHAT_FORCE_PLAIN=1`      | Force plain readline mode                                           |
-| `TUICHAT_QUIET=1`            | Silence the plain-mode startup banner on stderr                     |
-| `TUICHAT_DISABLE_IMAGES=1`   | Disable Kitty graphics image previews                               |
-| `TUICHAT_DEBUG_IMAGES=1`     | Log APC sequences to `/tmp/tuichat-images.log` (or the override below) |
-| `TUICHAT_DEBUG_LOG=<path>`   | Override the debug log path                                         |
+- `TUICHAT_DISABLE_IMAGES=1` — disable all inline image preview (Kitty + Mosaic both).
+- `TUICHAT_DEBUG_IMAGES=1` — append Kitty APC emissions to a debug log.
+- `TUICHAT_DEBUG_LOG=<path>` — override the debug log path (default `/tmp/tuichat-images.log`).
 
-## Image previews
+## Contributing
 
-Works in terminals that implement the Kitty graphics protocol with unicode placeholders — Kitty, Ghostty, and recent WezTerm. Detected automatically from `TERM`, `KITTY_WINDOW_ID`, `TERM_PROGRAM=ghostty`, `TERM_PROGRAM=WezTerm`, or `GHOSTTY_RESOURCES_DIR`. Images are uploaded once per attachment (cached by name) and rendered into a floating 40×10 cell panel on hover; the placeholder characters flow through OpenTUI's framebuffer as regular text, so the image never fights the renderer.
-
-Other terminals fall back to a plain `[image: name.png 1.2MB]` label. Agent-sent attachments get spooled to `<tmpdir>/tuichat/<hash>.<ext>` so their filename is also an OSC 8 hyperlink that opens in the OS default viewer.
-
-## Non-TTY behavior
-
-When `stdout.isTTY` is false (piped output, CI, SSH without a PTY), tuichat prints a one-line banner to stderr and switches to plain readline:
-
-- Each stdin line becomes one text message to the hardcoded `"tuichat"` space
-- `actions.send` writes to stdout, mirroring the upstream `terminal` provider
-- `startTyping` / `stopTyping` / reactions become no-ops
-- No sidebar, no image preview, no drag-drop
-
-Set `TUICHAT_QUIET=1` to suppress the banner.
-
-## Limitations
-
-- **Single instance per process.** `createTuichatClient` throws if a second one tries to start; OpenTUI can't share the alternate screen buffer.
-- **Scrollback is capped** at 2000 entries per chat; older messages are dropped with a marker at the top of the log.
-- **No persistence.** Chats live only for the process lifetime.
-- **Streaming.** Spectrum models each `send()` as a discrete message, so streamed token responses become many entries. If you're streaming, buffer agent-side before calling `send`.
+The `ts-reference/` directory preserves the earlier TypeScript + OpenTUI implementation as a spec-of-behavior for the Go port. It's not built or tested; ignore when developing.
 
 ## License
 
-MIT
+MIT.

@@ -1,35 +1,211 @@
 name: Release
 
 on:
-  pull_request:
-    types: [labeled, closed]
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
-      release:
-        type: boolean
-        default: true
-        description: "Force a release"
-      prerelease:
-        type: boolean
-        default: false
-        description: "Publish as a prerelease (npm tag: beta)"
-      dry-run:
-        type: boolean
-        default: false
-        description: "Dry run (no actual publish)"
+      version:
+        type: string
+        required: true
+        description: "Version tag to create (e.g. v0.1.0)"
 
 jobs:
-  release:
-    uses: photon-hq/buildspace/.github/workflows/typescript-monorepo-release.yaml@main
-    with:
-      service-name: tuichat
-      packages: '[{"name":"@photon-ai/tuichat","path":"packages/tuichat"},{"name":"@photon-ai/tuichat-spectrum-ts","path":"packages/tuichat-spectrum-ts"}]'
-      release: ${{ inputs.release || false }}
-      prerelease: ${{ inputs.prerelease || false }}
-      dry-run: ${{ inputs.dry-run || false }}
-      include-dependents: true
-    secrets:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      APP_ID: ${{ secrets.APP_ID }}
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            goos: darwin
+            goarch: arm64
+            ext: ""
+            compress: false
+          - target: darwin-x64
+            goos: darwin
+            goarch: amd64
+            ext: ""
+            compress: false
+          - target: linux-x64
+            goos: linux
+            goarch: amd64
+            ext: ""
+            compress: true
+          - target: linux-arm64
+            goos: linux
+            goarch: arm64
+            ext: ""
+            compress: true
+          - target: windows-x64
+            goos: windows
+            goarch: amd64
+            ext: ".exe"
+            compress: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist
+          VERSION="${{ steps.version.outputs.version }}"
+          BIN="dist/tuichat-${{ matrix.target }}${{ matrix.ext }}"
+          go build \
+            -ldflags="-s -w -X github.com/photon-hq/tuichat/internal/version.Version=${VERSION}" \
+            -trimpath \
+            -o "$BIN" \
+            ./cmd/tuichat
+          ls -lh "$BIN"
+
+      - name: Install UPX
+        if: matrix.compress
+        run: sudo apt-get update && sudo apt-get install -y upx
+
+      - name: Compress (UPX)
+        if: matrix.compress
+        run: |
+          BIN="dist/tuichat-${{ matrix.target }}${{ matrix.ext }}"
+          upx --best --lzma "$BIN"
+          ls -lh "$BIN"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tuichat-${{ matrix.target }}
+          path: dist/tuichat-${{ matrix.target }}${{ matrix.ext }}
+          if-no-files-found: error
+
+  codesign-macos:
+    name: Codesign macOS binaries
+    needs: build
+    runs-on: macos-14
+    env:
       APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+      DEVELOPER_ID_INSTALLER_NAME: ${{ secrets.DEVELOPER_ID_INSTALLER_NAME }}
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tuichat-darwin-*
+          path: dist
+          merge-multiple: true
+
+      - name: Skip if secrets unavailable
+        id: secrets
+        run: |
+          if [ -z "$APP_PRIVATE_KEY" ] || [ -z "$DEVELOPER_ID_INSTALLER_NAME" ]; then
+            echo "[codesign] org secrets not present; skipping" >&2
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import signing cert
+        if: steps.secrets.outputs.skipped == 'false'
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/tuichat.keychain"
+          KEYCHAIN_PW="$(openssl rand -base64 32)"
+          P12_PATH="$RUNNER_TEMP/cert.p12"
+          echo "$APP_PRIVATE_KEY" | base64 -d > "$P12_PATH"
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
+          security import "$P12_PATH" -k "$KEYCHAIN_PATH" -P "" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | tr -d '"')
+          rm -f "$P12_PATH"
+
+      - name: Codesign
+        if: steps.secrets.outputs.skipped == 'false'
+        run: |
+          set -euo pipefail
+          for BIN in dist/tuichat-darwin-arm64 dist/tuichat-darwin-x64; do
+            chmod +x "$BIN"
+            codesign --force --timestamp --options runtime \
+              --sign "$DEVELOPER_ID_INSTALLER_NAME" "$BIN"
+            codesign --verify --verbose=2 "$BIN"
+          done
+
+      - name: Re-upload darwin-arm64 (signed, overwrite)
+        uses: actions/upload-artifact@v4
+        with:
+          name: tuichat-darwin-arm64
+          path: dist/tuichat-darwin-arm64
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Re-upload darwin-x64 (signed, overwrite)
+        uses: actions/upload-artifact@v4
+        with:
+          name: tuichat-darwin-x64
+          path: dist/tuichat-darwin-x64
+          if-no-files-found: error
+          overwrite: true
+
+  release:
+    name: Publish GitHub Release
+    needs: [build, codesign-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -lh
+          shasum -a 256 tuichat-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          cd dist
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --generate-notes \
+            tuichat-* SHA256SUMS

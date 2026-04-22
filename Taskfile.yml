@@ -1,0 +1,66 @@
+version: '3'
+
+vars:
+  VERSION: '{{default "dev" .VERSION}}'
+  LDFLAGS: '-s -w -X github.com/photon-hq/tuichat/internal/version.Version={{.VERSION}}'
+
+tasks:
+  build:
+    desc: Dev build (symbols, not stripped) → dist/tuichat
+    cmds:
+      - mkdir -p dist
+      - go build -o dist/tuichat ./cmd/tuichat
+
+  build:release:
+    desc: Release build (stripped, trimpath) → dist/tuichat
+    cmds:
+      - mkdir -p dist
+      - go build -ldflags="{{.LDFLAGS}}" -trimpath -o dist/tuichat ./cmd/tuichat
+
+  cross:
+    desc: Cross-compile release binaries for every supported target
+    cmds:
+      - mkdir -p dist
+      - task: cross:one
+        vars: {TARGET: darwin-arm64, GOOS: darwin, GOARCH: arm64, EXT: ''}
+      - task: cross:one
+        vars: {TARGET: darwin-x64, GOOS: darwin, GOARCH: amd64, EXT: ''}
+      - task: cross:one
+        vars: {TARGET: linux-x64, GOOS: linux, GOARCH: amd64, EXT: ''}
+      - task: cross:one
+        vars: {TARGET: linux-arm64, GOOS: linux, GOARCH: arm64, EXT: ''}
+      - task: cross:one
+        vars: {TARGET: windows-x64, GOOS: windows, GOARCH: amd64, EXT: '.exe'}
+      - ls -lh dist/
+
+  cross:one:
+    internal: true
+    cmds:
+      - echo "→ building tuichat-{{.TARGET}}{{.EXT}}"
+      - GOOS={{.GOOS}} GOARCH={{.GOARCH}} CGO_ENABLED=0 go build -ldflags="{{.LDFLAGS}}" -trimpath -o dist/tuichat-{{.TARGET}}{{.EXT}} ./cmd/tuichat
+
+  test:
+    desc: Run Go tests
+    cmds:
+      - go test ./...
+
+  fmt:
+    desc: Format all Go code
+    cmds:
+      - gofmt -w .
+
+  vet:
+    desc: go vet
+    cmds:
+      - go vet ./...
+
+  check:
+    desc: fmt + vet + build (everything)
+    deps: [fmt, vet]
+    cmds:
+      - go build ./...
+
+  clean:
+    desc: Remove dist/
+    cmds:
+      - rm -rf dist

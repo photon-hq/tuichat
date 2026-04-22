@@ -345,7 +345,17 @@ func (m *Model) refreshViewport() {
 		return
 	}
 	inner := m.logInnerWidth()
-	m.log.SetContent(zoneMarkEntries(m.theme, chat, inner))
+	content := zoneMarkEntries(m.theme, chat, inner)
+	// Bottom-align: if content fits in the viewport, prepend blank lines so
+	// the newest message sits at the bottom next to the input, with empty
+	// space above rather than below.
+	if content != "" && m.log.Height > 0 {
+		lines := strings.Count(content, "\n") + 1
+		if lines < m.log.Height {
+			content = strings.Repeat("\n", m.log.Height-lines) + content
+		}
+	}
+	m.log.SetContent(content)
 	m.log.GotoBottom()
 }
 
