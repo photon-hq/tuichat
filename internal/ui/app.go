@@ -18,6 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/mosaic"
 	zone "github.com/lrstanley/bubblezone"
+	"github.com/mattn/go-runewidth"
 
 	"github.com/photon-hq/tuichat/internal/drop"
 	"github.com/photon-hq/tuichat/internal/kitty"
@@ -432,23 +433,42 @@ func (m *Model) View() string {
 }
 
 func (m *Model) renderTitleBar(activeID string) string {
-	titleColor := lipgloss.NewStyle().Foreground(m.theme.UserColor)
-	subColor := lipgloss.NewStyle().Foreground(m.theme.SystemColor)
-	bar := " " + m.theme.Title
-	if activeID != "" {
-		bar += " · " + activeID
-	}
-	bar += " "
-	rest := " — Ctrl+N new · Ctrl+J/K nav · Ctrl+C exit · Ctrl+L clear · Tab complete · Esc cancel"
 	rightWidth := m.width - SidebarWidth
-	if rightWidth < 0 {
-		rightWidth = 0
+	if rightWidth <= 0 {
+		return ""
 	}
-	rendered := titleColor.Background(m.theme.BorderColor).Render(bar) +
-		subColor.Background(m.theme.BorderColor).Render(rest)
+
+	title := " " + m.theme.Title
+	if activeID != "" {
+		title += " · " + activeID
+	}
+	title += " "
+	rest := " — Ctrl+N new · Ctrl+J/K nav · Ctrl+C exit · Ctrl+L clear · Tab complete · Esc cancel"
+
+	// Pre-truncate by visible width so the terminal doesn't hard-wrap us.
+	titleW := runewidth.StringWidth(title)
+	if titleW > rightWidth {
+		title = runewidth.Truncate(title, rightWidth, "")
+		rest = ""
+	} else {
+		avail := rightWidth - titleW
+		if runewidth.StringWidth(rest) > avail {
+			rest = runewidth.Truncate(rest, avail, "")
+		}
+	}
+
+	titleStyle := lipgloss.NewStyle().
+		Foreground(m.theme.UserColor).
+		Background(m.theme.BorderColor)
+	subStyle := lipgloss.NewStyle().
+		Foreground(m.theme.SystemColor).
+		Background(m.theme.BorderColor)
+	rendered := titleStyle.Render(title) + subStyle.Render(rest)
+
 	return lipgloss.NewStyle().
 		Background(m.theme.BorderColor).
 		Width(rightWidth).
+		MaxWidth(rightWidth).
 		Render(rendered)
 }
 
@@ -595,6 +615,7 @@ func zoneMarkSidebar(theme Theme, chats []store.ChatState, activeID string, heig
 	column := top + "\n" + spacer + bottom
 	return lipgloss.NewStyle().
 		Width(SidebarWidth).
+		MaxWidth(SidebarWidth + 1). // + 1 for the right border
 		Height(height).
 		BorderStyle(lipgloss.Border{Right: "│"}).
 		BorderRight(true).

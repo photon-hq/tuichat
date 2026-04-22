@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/photon-hq/tuichat/internal/kitty"
 	"github.com/photon-hq/tuichat/internal/store"
 )
 
@@ -48,6 +49,12 @@ func renderEntry(theme Theme, e store.LogEntry, allEntries []store.LogEntry, wid
 		body = LinkifyText(e.Content.Text, textStyle, linkStyle)
 	case "attachment":
 		body = renderAttachmentLabel(theme, e, "attachment")
+		if kitty.SupportedMimeType(e.Content.MimeType) {
+			hint := lipgloss.NewStyle().Foreground(theme.SystemColor).Render(
+				"  (click to preview)",
+			)
+			body += hint
+		}
 	case "voice":
 		body = renderAttachmentLabel(theme, e, "voice")
 	case "contact":
