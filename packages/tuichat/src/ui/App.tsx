@@ -9,10 +9,11 @@ import {
 import { useKeyboard, useRenderer } from "@opentui/react";
 import { attachment } from "spectrum-ts";
 import { extractDroppedPaths, resolveDroppedAttachment } from "../drop";
-import type { CommandDef, Store } from "../store";
+import type { ChatState, CommandDef, Store } from "../store";
 import { Attachments } from "./Attachments";
 import { KittyImage } from "./KittyImage";
 import { MessageItem } from "./MessageItem";
+import { Sidebar } from "./Sidebar";
 import { Suggestions } from "./Suggestions";
 import { theme } from "./theme";
 
@@ -29,11 +30,24 @@ function filterCommands(
   return commands.filter((c) => c.name.toLowerCase().startsWith(lower));
 }
 
+const EMPTY_PENDING: readonly never[] = [];
+
+function activeChat(
+  chats: readonly ChatState[],
+  activeId: string | null
+): ChatState | null {
+  if (!activeId) return null;
+  return chats.find((c) => c.id === activeId) ?? null;
+}
+
 export function App({ store }: AppProps) {
   const renderer = useRenderer();
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot);
-  const [inputValue, setInputValue] = useState("");
-  const [prefix, setPrefix] = useState("");
+  const active = activeChat(snapshot.chats, snapshot.activeChatId);
+  const activeId = active?.id ?? null;
+
+  const [inputValue, setInputValue] = useState(active?.inputDraft ?? "");
+  const [prefix, setPrefix] = useState(active?.inputDraft ?? "");
   const [tabIndex, setTabIndex] = useState(0);
 
   const inputRef = useRef(inputValue);
@@ -42,6 +56,16 @@ export function App({ store }: AppProps) {
   prefixRef.current = prefix;
   const tabIndexRef = useRef(tabIndex);
   tabIndexRef.current = tabIndex;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+
+  useEffect(() => {
+    const draft = active?.inputDraft ?? "";
+    setInputValue(draft);
+    setPrefix(draft);
+    setTabIndex(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
 
   const commands = snapshot.commands;
   const matches = useMemo(
@@ -51,43 +75,62 @@ export function App({ store }: AppProps) {
 
   const handleInput = useCallback(
     (value: string) => {
+      const currentId = activeIdRef.current;
+      if (!currentId) return;
       const { cleaned, attachments } = extractDroppedPaths(value);
       if (attachments.length > 0) {
         for (const a of attachments) {
-          store.addPendingAttachment(a);
+          store.addPendingAttachment(currentId, a);
         }
       }
       setInputValue(cleaned);
       setPrefix(cleaned);
       setTabIndex(0);
+      store.setInputDraft(currentId, cleaned);
     },
     [store]
   );
 
   const handleSubmit = useCallback(() => {
+    const currentId = activeIdRef.current;
+    if (!currentId) return;
     const text = inputRef.current.trim();
-    const pendings = store.getSnapshot().pendingAttachments;
+
+    if (text === "/new") {
+      store.setInputDraft(currentId, "");
+      store.newChat();
+      setInputValue("");
+      setPrefix("");
+      setTabIndex(0);
+      return;
+    }
+
+    const chatSnapshot = store
+      .getSnapshot()
+      .chats.find((c) => c.id === currentId);
+    const pendings = chatSnapshot?.pendingAttachments ?? EMPTY_PENDING;
     if (text.length === 0 && pendings.length === 0) return;
 
     (async () => {
       for (const p of pendings) {
         try {
           const content = await attachment(p.path, { name: p.name }).build();
-          store.appendUser(content, { attachmentPath: p.path });
-          store.pushUserInput(content);
+          store.appendUser(currentId, content, { attachmentPath: p.path });
+          store.pushUserInput(currentId, content);
         } catch {
-          store.appendSystem(`failed to attach "${p.name}"`);
+          store.appendSystem(currentId, `failed to attach "${p.name}"`);
         }
       }
 
       if (text.length > 0) {
         const content = { type: "text" as const, text };
-        store.appendUser(content);
-        store.pushUserInput(content);
+        store.appendUser(currentId, content);
+        store.pushUserInput(currentId, content);
       }
     })();
 
-    store.clearPendingAttachments();
+    store.clearPendingAttachments(currentId);
+    store.setInputDraft(currentId, "");
     setInputValue("");
     setPrefix("");
     setTabIndex(0);
@@ -98,11 +141,24 @@ export function App({ store }: AppProps) {
       process.kill(process.pid, "SIGINT");
       return;
     }
-    if (key.ctrl && key.name === "l") {
-      store.appendSystem("screen cleared");
+    if (key.ctrl && key.name === "n") {
+      store.newChat();
+      return;
+    }
+    if (key.ctrl && key.name === "j") {
+      store.cycleActiveChat(1);
       return;
     }
     if (key.ctrl && key.name === "k") {
+      store.cycleActiveChat(-1);
+      return;
+    }
+    if (key.ctrl && key.name === "l") {
+      const id = activeIdRef.current;
+      if (id) store.appendSystem(id, "screen cleared");
+      return;
+    }
+    if (key.ctrl && key.name === "d") {
       renderer?.toggleDebugOverlay();
       return;
     }
@@ -118,7 +174,11 @@ export function App({ store }: AppProps) {
     }
 
     if (key.name === "escape") {
-      store.clearPendingAttachments();
+      const id = activeIdRef.current;
+      if (id) {
+        store.clearPendingAttachments(id);
+        store.setInputDraft(id, "");
+      }
       setInputValue("");
       setPrefix("");
       setTabIndex(0);
@@ -133,12 +193,14 @@ export function App({ store }: AppProps) {
       preventDefault: () => void;
       stopPropagation: () => void;
     }) => {
+      const currentId = activeIdRef.current;
+      if (!currentId) return;
       const raw = new TextDecoder().decode(event.bytes);
       const resolved = resolveDroppedAttachment(raw);
       if (!resolved) return;
       event.preventDefault();
       event.stopPropagation();
-      store.addPendingAttachment(resolved);
+      store.addPendingAttachment(currentId, resolved);
     };
     renderer.keyInput.on("paste", handler);
     return () => {
@@ -146,17 +208,21 @@ export function App({ store }: AppProps) {
     };
   }, [renderer, store]);
 
+  const entries = active?.entries ?? [];
+  const typing = active?.typing ?? false;
+  const pendingAttachments = active?.pendingAttachments ?? EMPTY_PENDING;
+
   const showSuggestions = matches.length > 0 && prefix.startsWith("/");
   const suggestionRows = showSuggestions
     ? Math.min(matches.length, 5) + (matches.length > 5 ? 1 : 0)
     : 0;
-  const attachmentRows = snapshot.pendingAttachments.length > 0 ? 1 : 0;
+  const attachmentRows = pendingAttachments.length > 0 ? 1 : 0;
   const inputContainerHeight = 2 + attachmentRows + suggestionRows + 1;
 
   const hovered = snapshot.hoveredPreview;
 
   return (
-    <box style={{ flexDirection: "column", flexGrow: 1, height: "100%" }}>
+    <box style={{ flexDirection: "row", flexGrow: 1, height: "100%" }}>
       {hovered ? (
         <box
           style={{
@@ -189,94 +255,122 @@ export function App({ store }: AppProps) {
         </box>
       ) : null}
 
-      <box
-        style={{
-          height: 1,
-          paddingLeft: 1,
-          paddingRight: 1,
-          backgroundColor: theme.colors.border,
-        }}
-      >
-        <text>
-          <span style={{ fg: theme.colors.user }}>{` ${theme.title} `}</span>
-          <span style={{ fg: theme.colors.system }}>
-            {" — Ctrl+C exit · Ctrl+L clear · Tab complete · Esc cancel · drop files to attach"}
-          </span>
-        </text>
-      </box>
-
-      <scrollbox
-        focused
-        style={{
-          flexGrow: 1,
-          paddingLeft: 1,
-          paddingRight: 1,
-          stickyScroll: true,
-          stickyStart: "bottom",
-          contentOptions: {
-            flexDirection: "column",
-            justifyContent: "flex-end",
-            minHeight: "100%",
-          },
-          scrollbarOptions: {
-            visible: true,
-          },
-        }}
-      >
-        {snapshot.entries.map((entry) => (
-          <MessageItem key={entry.id} entry={entry} store={store} />
-        ))}
-      </scrollbox>
+      <Sidebar
+        chats={snapshot.chats}
+        activeChatId={snapshot.activeChatId}
+        store={store}
+      />
 
       <box
         style={{
-          height: 1,
-          paddingLeft: 1,
-          paddingRight: 1,
-        }}
-      >
-        <text>
-          {snapshot.typing ? (
-            <span style={{ fg: theme.colors.typing }}>
-              {"● agent is typing…"}
-            </span>
-          ) : (
-            <span style={{ fg: theme.colors.system }}>{" "}</span>
-          )}
-        </text>
-      </box>
-
-      <box
-        style={{
-          border: true,
-          borderStyle: "rounded",
-          borderColor: theme.colors.border,
           flexDirection: "column",
-          flexShrink: 0,
-          height: inputContainerHeight,
-          paddingLeft: 1,
-          paddingRight: 1,
+          flexGrow: 1,
+          height: "100%",
         }}
       >
-        {snapshot.pendingAttachments.length > 0 ? (
-          <Attachments pending={snapshot.pendingAttachments} />
-        ) : null}
-        {showSuggestions ? (
-          <Suggestions matches={matches} selectedIndex={tabIndex} />
-        ) : null}
-        <box style={{ height: 1, flexShrink: 0 }}>
-          <input
-            focused
-            placeholder="type a message and press enter…"
-            value={inputValue}
-            onInput={handleInput}
-            onSubmit={handleSubmit}
-            style={{
-              textColor: theme.colors.input,
-              placeholderColor: theme.colors.system,
-              cursorColor: theme.colors.prompt,
-            }}
-          />
+        <box
+          style={{
+            height: 1,
+            paddingLeft: 1,
+            paddingRight: 1,
+            backgroundColor: theme.colors.border,
+          }}
+        >
+          <text>
+            <span style={{ fg: theme.colors.user }}>
+              {` ${theme.title}${activeId ? ` · ${activeId}` : ""} `}
+            </span>
+            <span style={{ fg: theme.colors.system }}>
+              {" — Ctrl+N new · Ctrl+J/K nav · Ctrl+C exit · Ctrl+L clear · Tab complete · Esc cancel"}
+            </span>
+          </text>
+        </box>
+
+        <scrollbox
+          focused
+          style={{
+            flexGrow: 1,
+            paddingLeft: 1,
+            paddingRight: 1,
+            stickyScroll: true,
+            stickyStart: "bottom",
+            contentOptions: {
+              flexDirection: "column",
+              justifyContent: "flex-end",
+              minHeight: "100%",
+            },
+            scrollbarOptions: {
+              visible: true,
+            },
+          }}
+        >
+          {activeId
+            ? entries.map((entry) => (
+                <MessageItem
+                  key={entry.id}
+                  entry={entry}
+                  entries={entries}
+                  chatId={activeId}
+                  store={store}
+                />
+              ))
+            : null}
+        </scrollbox>
+
+        <box
+          style={{
+            height: 1,
+            paddingLeft: 1,
+            paddingRight: 1,
+          }}
+        >
+          <text>
+            {typing ? (
+              <span style={{ fg: theme.colors.typing }}>
+                {"● agent is typing…"}
+              </span>
+            ) : (
+              <span style={{ fg: theme.colors.system }}>{" "}</span>
+            )}
+          </text>
+        </box>
+
+        <box
+          style={{
+            border: true,
+            borderStyle: "rounded",
+            borderColor: theme.colors.border,
+            flexDirection: "column",
+            flexShrink: 0,
+            height: inputContainerHeight,
+            paddingLeft: 1,
+            paddingRight: 1,
+          }}
+        >
+          {pendingAttachments.length > 0 ? (
+            <Attachments pending={pendingAttachments} />
+          ) : null}
+          {showSuggestions ? (
+            <Suggestions matches={matches} selectedIndex={tabIndex} />
+          ) : null}
+          <box style={{ height: 1, flexShrink: 0 }}>
+            <input
+              focused
+              placeholder={
+                activeId
+                  ? "type a message and press enter…"
+                  : "Ctrl+N to start a new chat"
+              }
+              value={inputValue}
+              onInput={handleInput}
+              onSubmit={handleSubmit}
+              style={{
+                textColor: theme.colors.input,
+                placeholderColor: theme.colors.system,
+                cursorColor: theme.colors.prompt,
+              }}
+            />
+          </box>
         </box>
       </box>
     </box>

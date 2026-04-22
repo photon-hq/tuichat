@@ -5,21 +5,28 @@ import {
   supportsKittyGraphics,
 } from "../kitty";
 import type { LogEntry, Store } from "../store";
-import { linkify } from "./linkify";
+import { linkify, wrapOSC8 } from "./linkify";
 import { formatBytes, formatTime, roleColor, theme } from "./theme";
 
 interface MessageItemProps {
   entry: LogEntry;
+  entries: readonly LogEntry[];
+  chatId: string;
   store: Store;
 }
 
-export function MessageItem({ entry, store }: MessageItemProps) {
+export function MessageItem({
+  entry,
+  entries,
+  chatId,
+  store,
+}: MessageItemProps) {
   const { content, role, timestamp, reactions, replyTo, attachmentPath } =
     entry;
   const prefix = theme.prefix[role].padEnd(5, " ");
   const color = roleColor(role);
   const replyToEntry = replyTo
-    ? store.getSnapshot().entries.find((e) => e.id === replyTo)
+    ? entries.find((e) => e.id === replyTo)
     : undefined;
 
   return (
@@ -43,6 +50,7 @@ export function MessageItem({ entry, store }: MessageItemProps) {
         timestamp={timestamp}
         content={content}
         attachmentPath={attachmentPath}
+        chatId={chatId}
         store={store}
       />
 
@@ -72,6 +80,7 @@ interface ContentLineProps {
   timestamp: Date;
   content: LogEntry["content"];
   attachmentPath?: string;
+  chatId: string;
   store: Store;
 }
 
@@ -81,6 +90,7 @@ function ContentLine({
   timestamp,
   content,
   attachmentPath,
+  chatId,
   store,
 }: ContentLineProps) {
   const timeLabel = `[${formatTime(timestamp)}] `;
@@ -106,6 +116,7 @@ function ContentLine({
           timeLabel={timeLabel}
           content={content}
           attachmentPath={attachmentPath}
+          chatId={chatId}
           store={store}
         />
       );
@@ -137,6 +148,7 @@ interface AttachmentLineProps {
   timeLabel: string;
   content: Extract<LogEntry["content"], { type: "attachment" }>;
   attachmentPath?: string;
+  chatId: string;
   store: Store;
 }
 
@@ -146,6 +158,7 @@ function AttachmentLine({
   timeLabel,
   content,
   attachmentPath,
+  chatId,
   store,
 }: AttachmentLineProps) {
   const [resolvedSize, setResolvedSize] = useState<number | undefined>(
@@ -163,7 +176,10 @@ function AttachmentLine({
       })
       .catch(() => {
         if (cancelled) return;
-        store.appendSystem(`failed to read attachment "${content.name}"`);
+        store.appendSystem(
+          chatId,
+          `failed to read attachment "${content.name}"`
+        );
       });
     return () => {
       cancelled = true;
@@ -207,12 +223,11 @@ function AttachmentLine({
           {`[${canPreview ? "image" : "attachment"}: `}
         </span>
         {attachmentPath ? (
-          <a
-            href={`file://${attachmentPath}`}
-            style={{ fg: theme.colors.attachment, attributes: 4 }}
+          <span
+            style={{ fg: theme.colors.attachment, attributes: 8 }}
           >
-            {content.name}
-          </a>
+            {wrapOSC8(`file://${attachmentPath}`, content.name)}
+          </span>
         ) : (
           <span style={{ fg: theme.colors.attachment }}>{content.name}</span>
         )}

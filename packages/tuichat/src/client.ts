@@ -18,6 +18,7 @@ export async function createTuichatClient(
   options?: CreateTuichatClientOptions
 ): Promise<TuichatClient> {
   const store = createStore({ commands: options?.commands });
+  store.newChat();
 
   const renderer = await createCliRenderer({
     exitOnCtrlC: false,

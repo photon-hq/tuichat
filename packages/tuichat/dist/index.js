@@ -576,6 +576,11 @@ import { useEffect as useEffect2, useState as useState2 } from "react";
 // src/ui/linkify.tsx
 import { jsx as jsx3 } from "@opentui/react/jsx-runtime";
 var URL_REGEX = /https?:\/\/[^\s<>()\[\]{}]+/g;
+var OSC8_START = "\x1B]8;;";
+var OSC8_ST = "\x1B\\";
+function wrapOSC8(url, text) {
+  return `${OSC8_START}${url}${OSC8_ST}${text}${OSC8_START}${OSC8_ST}`;
+}
 function linkify(text, colors) {
   const out = [];
   let last = 0;
@@ -590,11 +595,10 @@ function linkify(text, colors) {
     }
     out.push(
       /* @__PURE__ */ jsx3(
-        "a",
+        "span",
         {
-          href: match[0],
-          style: { fg: colors.link, attributes: 4 },
-          children: match[0]
+          style: { fg: colors.link, attributes: 8 },
+          children: wrapOSC8(match[0], match[0])
         },
         `l${i++}`
       )
@@ -611,11 +615,16 @@ function linkify(text, colors) {
 
 // src/ui/MessageItem.tsx
 import { jsx as jsx4, jsxs } from "@opentui/react/jsx-runtime";
-function MessageItem({ entry, store }) {
+function MessageItem({
+  entry,
+  entries,
+  chatId,
+  store
+}) {
   const { content, role, timestamp, reactions, replyTo, attachmentPath } = entry;
   const prefix = theme.prefix[role].padEnd(5, " ");
   const color = roleColor(role);
-  const replyToEntry = replyTo ? store.getSnapshot().entries.find((e) => e.id === replyTo) : void 0;
+  const replyToEntry = replyTo ? entries.find((e) => e.id === replyTo) : void 0;
   return /* @__PURE__ */ jsxs("box", { style: { flexDirection: "column", marginBottom: 0 }, children: [
     replyToEntry ? /* @__PURE__ */ jsxs("text", { children: [
       /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.border }, children: "  \u250C\u2500 " }),
@@ -631,6 +640,7 @@ function MessageItem({ entry, store }) {
         timestamp,
         content,
         attachmentPath,
+        chatId,
         store
       }
     ),
@@ -653,6 +663,7 @@ function ContentLine({
   timestamp,
   content,
   attachmentPath,
+  chatId,
   store
 }) {
   const timeLabel = `[${formatTime(timestamp)}] `;
@@ -676,6 +687,7 @@ function ContentLine({
           timeLabel,
           content,
           attachmentPath,
+          chatId,
           store
         }
       );
@@ -702,6 +714,7 @@ function AttachmentLine({
   timeLabel,
   content,
   attachmentPath,
+  chatId,
   store
 }) {
   const [resolvedSize, setResolvedSize] = useState2(
@@ -715,7 +728,10 @@ function AttachmentLine({
       setResolvedSize(buf.byteLength);
     }).catch(() => {
       if (cancelled) return;
-      store.appendSystem(`failed to read attachment "${content.name}"`);
+      store.appendSystem(
+        chatId,
+        `failed to read attachment "${content.name}"`
+      );
     });
     return () => {
       cancelled = true;
@@ -746,11 +762,10 @@ function AttachmentLine({
         /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.border }, children: " \u203A " }),
         /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.attachment }, children: `[${canPreview ? "image" : "attachment"}: ` }),
         attachmentPath ? /* @__PURE__ */ jsx4(
-          "a",
+          "span",
           {
-            href: `file://${attachmentPath}`,
-            style: { fg: theme.colors.attachment, attributes: 4 },
-            children: content.name
+            style: { fg: theme.colors.attachment, attributes: 8 },
+            children: wrapOSC8(`file://${attachmentPath}`, content.name)
           }
         ) : /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.attachment }, children: content.name }),
         /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.attachment }, children: `${sizeLabel}]` }),
@@ -767,8 +782,100 @@ function safeStringify(raw) {
   }
 }
 
+// src/ui/Sidebar.tsx
+import { jsx as jsx5, jsxs as jsxs2 } from "@opentui/react/jsx-runtime";
+var SIDEBAR_WIDTH = 20;
+function trim(s, n) {
+  return s.length <= n ? s : `${s.slice(0, n - 1)}\u2026`;
+}
+function Sidebar({ chats, activeChatId, store }) {
+  return /* @__PURE__ */ jsxs2(
+    "box",
+    {
+      style: {
+        width: SIDEBAR_WIDTH,
+        flexDirection: "column",
+        flexShrink: 0,
+        border: ["right"],
+        borderColor: theme.colors.border
+      },
+      children: [
+        /* @__PURE__ */ jsx5(
+          "box",
+          {
+            style: {
+              height: 1,
+              paddingLeft: 1,
+              paddingRight: 1
+            },
+            children: /* @__PURE__ */ jsx5("text", { children: /* @__PURE__ */ jsx5("span", { style: { fg: theme.colors.system }, children: "Chats" }) })
+          }
+        ),
+        /* @__PURE__ */ jsx5("box", { style: { flexDirection: "column", flexShrink: 0 }, children: chats.map((chat) => {
+          const selected = chat.id === activeChatId;
+          return /* @__PURE__ */ jsx5(
+            "box",
+            {
+              style: {
+                height: 1,
+                paddingLeft: 1,
+                paddingRight: 1
+              },
+              onMouseDown: () => store.setActiveChat(chat.id),
+              children: /* @__PURE__ */ jsxs2("text", { children: [
+                /* @__PURE__ */ jsx5(
+                  "span",
+                  {
+                    style: {
+                      fg: selected ? theme.colors.prompt : theme.colors.system
+                    },
+                    children: selected ? "\u203A " : "  "
+                  }
+                ),
+                /* @__PURE__ */ jsx5(
+                  "span",
+                  {
+                    style: {
+                      fg: selected ? theme.colors.user : theme.colors.input
+                    },
+                    children: trim(chat.id, SIDEBAR_WIDTH - 4)
+                  }
+                )
+              ] })
+            },
+            chat.id
+          );
+        }) }),
+        /* @__PURE__ */ jsx5("box", { style: { flexGrow: 1 } }),
+        /* @__PURE__ */ jsx5(
+          "box",
+          {
+            style: {
+              height: 1,
+              paddingLeft: 1,
+              paddingRight: 1
+            },
+            children: /* @__PURE__ */ jsx5("text", { children: /* @__PURE__ */ jsx5("span", { style: { fg: theme.colors.system }, children: "Ctrl+N new" }) })
+          }
+        ),
+        /* @__PURE__ */ jsx5(
+          "box",
+          {
+            style: {
+              height: 1,
+              paddingLeft: 1,
+              paddingRight: 1
+            },
+            children: /* @__PURE__ */ jsx5("text", { children: /* @__PURE__ */ jsx5("span", { style: { fg: theme.colors.system }, children: "Ctrl+J/K \u2195" }) })
+          }
+        )
+      ]
+    }
+  );
+}
+
 // src/ui/Suggestions.tsx
-import { Fragment, jsx as jsx5, jsxs as jsxs2 } from "@opentui/react/jsx-runtime";
+import { Fragment, jsx as jsx6, jsxs as jsxs3 } from "@opentui/react/jsx-runtime";
 var MAX_VISIBLE = 5;
 function Suggestions({ matches, selectedIndex }) {
   if (matches.length === 0) return null;
@@ -781,7 +888,7 @@ function Suggestions({ matches, selectedIndex }) {
   );
   const overflow = matches.length - visible.length - start;
   const totalRows = visible.length + (overflow > 0 ? 1 : 0);
-  return /* @__PURE__ */ jsxs2(
+  return /* @__PURE__ */ jsxs3(
     "box",
     {
       style: {
@@ -795,7 +902,7 @@ function Suggestions({ matches, selectedIndex }) {
           const isSelected = start + i === selected;
           const rowBg = isSelected ? theme.colors.suggestionSelectedBg : theme.colors.suggestionBg;
           const name = cmd.name.padEnd(longestName, " ");
-          return /* @__PURE__ */ jsx5(
+          return /* @__PURE__ */ jsx6(
             "box",
             {
               style: {
@@ -804,8 +911,8 @@ function Suggestions({ matches, selectedIndex }) {
                 paddingLeft: 1,
                 paddingRight: 1
               },
-              children: /* @__PURE__ */ jsxs2("text", { children: [
-                /* @__PURE__ */ jsx5(
+              children: /* @__PURE__ */ jsxs3("text", { children: [
+                /* @__PURE__ */ jsx6(
                   "span",
                   {
                     style: {
@@ -815,7 +922,7 @@ function Suggestions({ matches, selectedIndex }) {
                     children: isSelected ? "\u203A " : "  "
                   }
                 ),
-                /* @__PURE__ */ jsx5(
+                /* @__PURE__ */ jsx6(
                   "span",
                   {
                     style: {
@@ -825,16 +932,16 @@ function Suggestions({ matches, selectedIndex }) {
                     children: name
                   }
                 ),
-                cmd.description ? /* @__PURE__ */ jsxs2(Fragment, { children: [
-                  /* @__PURE__ */ jsx5("span", { style: { fg: theme.colors.border, bg: rowBg }, children: "  \u2014 " }),
-                  /* @__PURE__ */ jsx5("span", { style: { fg: theme.colors.system, bg: rowBg }, children: cmd.description })
+                cmd.description ? /* @__PURE__ */ jsxs3(Fragment, { children: [
+                  /* @__PURE__ */ jsx6("span", { style: { fg: theme.colors.border, bg: rowBg }, children: "  \u2014 " }),
+                  /* @__PURE__ */ jsx6("span", { style: { fg: theme.colors.system, bg: rowBg }, children: cmd.description })
                 ] }) : null
               ] })
             },
             cmd.name
           );
         }),
-        overflow > 0 ? /* @__PURE__ */ jsx5(
+        overflow > 0 ? /* @__PURE__ */ jsx6(
           "box",
           {
             style: {
@@ -843,7 +950,7 @@ function Suggestions({ matches, selectedIndex }) {
               paddingLeft: 1,
               paddingRight: 1
             },
-            children: /* @__PURE__ */ jsx5("text", { children: /* @__PURE__ */ jsx5(
+            children: /* @__PURE__ */ jsx6("text", { children: /* @__PURE__ */ jsx6(
               "span",
               {
                 style: {
@@ -861,17 +968,24 @@ function Suggestions({ matches, selectedIndex }) {
 }
 
 // src/ui/App.tsx
-import { jsx as jsx6, jsxs as jsxs3 } from "@opentui/react/jsx-runtime";
+import { jsx as jsx7, jsxs as jsxs4 } from "@opentui/react/jsx-runtime";
 function filterCommands(commands, prefix) {
   if (!prefix.startsWith("/")) return [];
   const lower = prefix.toLowerCase();
   return commands.filter((c) => c.name.toLowerCase().startsWith(lower));
 }
+var EMPTY_PENDING = [];
+function activeChat(chats, activeId) {
+  if (!activeId) return null;
+  return chats.find((c) => c.id === activeId) ?? null;
+}
 function App({ store }) {
   const renderer = useRenderer();
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot);
-  const [inputValue, setInputValue] = useState3("");
-  const [prefix, setPrefix] = useState3("");
+  const active = activeChat(snapshot.chats, snapshot.activeChatId);
+  const activeId = active?.id ?? null;
+  const [inputValue, setInputValue] = useState3(active?.inputDraft ?? "");
+  const [prefix, setPrefix] = useState3(active?.inputDraft ?? "");
   const [tabIndex, setTabIndex] = useState3(0);
   const inputRef = useRef(inputValue);
   inputRef.current = inputValue;
@@ -879,6 +993,14 @@ function App({ store }) {
   prefixRef.current = prefix;
   const tabIndexRef = useRef(tabIndex);
   tabIndexRef.current = tabIndex;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  useEffect3(() => {
+    const draft = active?.inputDraft ?? "";
+    setInputValue(draft);
+    setPrefix(draft);
+    setTabIndex(0);
+  }, [activeId]);
   const commands = snapshot.commands;
   const matches = useMemo(
     () => filterCommands(commands, prefix),
@@ -886,39 +1008,54 @@ function App({ store }) {
   );
   const handleInput = useCallback(
     (value) => {
+      const currentId = activeIdRef.current;
+      if (!currentId) return;
       const { cleaned, attachments } = extractDroppedPaths(value);
       if (attachments.length > 0) {
         for (const a of attachments) {
-          store.addPendingAttachment(a);
+          store.addPendingAttachment(currentId, a);
         }
       }
       setInputValue(cleaned);
       setPrefix(cleaned);
       setTabIndex(0);
+      store.setInputDraft(currentId, cleaned);
     },
     [store]
   );
   const handleSubmit = useCallback(() => {
+    const currentId = activeIdRef.current;
+    if (!currentId) return;
     const text = inputRef.current.trim();
-    const pendings = store.getSnapshot().pendingAttachments;
+    if (text === "/new") {
+      store.setInputDraft(currentId, "");
+      store.newChat();
+      setInputValue("");
+      setPrefix("");
+      setTabIndex(0);
+      return;
+    }
+    const chatSnapshot = store.getSnapshot().chats.find((c) => c.id === currentId);
+    const pendings = chatSnapshot?.pendingAttachments ?? EMPTY_PENDING;
     if (text.length === 0 && pendings.length === 0) return;
     (async () => {
       for (const p of pendings) {
         try {
           const content = await attachment(p.path, { name: p.name }).build();
-          store.appendUser(content, { attachmentPath: p.path });
-          store.pushUserInput(content);
+          store.appendUser(currentId, content, { attachmentPath: p.path });
+          store.pushUserInput(currentId, content);
         } catch {
-          store.appendSystem(`failed to attach "${p.name}"`);
+          store.appendSystem(currentId, `failed to attach "${p.name}"`);
         }
       }
       if (text.length > 0) {
         const content = { type: "text", text };
-        store.appendUser(content);
-        store.pushUserInput(content);
+        store.appendUser(currentId, content);
+        store.pushUserInput(currentId, content);
       }
     })();
-    store.clearPendingAttachments();
+    store.clearPendingAttachments(currentId);
+    store.setInputDraft(currentId, "");
     setInputValue("");
     setPrefix("");
     setTabIndex(0);
@@ -928,11 +1065,24 @@ function App({ store }) {
       process.kill(process.pid, "SIGINT");
       return;
     }
-    if (key.ctrl && key.name === "l") {
-      store.appendSystem("screen cleared");
+    if (key.ctrl && key.name === "n") {
+      store.newChat();
+      return;
+    }
+    if (key.ctrl && key.name === "j") {
+      store.cycleActiveChat(1);
       return;
     }
     if (key.ctrl && key.name === "k") {
+      store.cycleActiveChat(-1);
+      return;
+    }
+    if (key.ctrl && key.name === "l") {
+      const id = activeIdRef.current;
+      if (id) store.appendSystem(id, "screen cleared");
+      return;
+    }
+    if (key.ctrl && key.name === "d") {
       renderer?.toggleDebugOverlay();
       return;
     }
@@ -946,7 +1096,11 @@ function App({ store }) {
       return;
     }
     if (key.name === "escape") {
-      store.clearPendingAttachments();
+      const id = activeIdRef.current;
+      if (id) {
+        store.clearPendingAttachments(id);
+        store.setInputDraft(id, "");
+      }
       setInputValue("");
       setPrefix("");
       setTabIndex(0);
@@ -956,25 +1110,30 @@ function App({ store }) {
   useEffect3(() => {
     if (!renderer) return;
     const handler = (event) => {
+      const currentId = activeIdRef.current;
+      if (!currentId) return;
       const raw = new TextDecoder().decode(event.bytes);
       const resolved = resolveDroppedAttachment(raw);
       if (!resolved) return;
       event.preventDefault();
       event.stopPropagation();
-      store.addPendingAttachment(resolved);
+      store.addPendingAttachment(currentId, resolved);
     };
     renderer.keyInput.on("paste", handler);
     return () => {
       renderer.keyInput.off("paste", handler);
     };
   }, [renderer, store]);
+  const entries = active?.entries ?? [];
+  const typing = active?.typing ?? false;
+  const pendingAttachments = active?.pendingAttachments ?? EMPTY_PENDING;
   const showSuggestions = matches.length > 0 && prefix.startsWith("/");
   const suggestionRows = showSuggestions ? Math.min(matches.length, 5) + (matches.length > 5 ? 1 : 0) : 0;
-  const attachmentRows = snapshot.pendingAttachments.length > 0 ? 1 : 0;
+  const attachmentRows = pendingAttachments.length > 0 ? 1 : 0;
   const inputContainerHeight = 2 + attachmentRows + suggestionRows + 1;
   const hovered = snapshot.hoveredPreview;
-  return /* @__PURE__ */ jsxs3("box", { style: { flexDirection: "column", flexGrow: 1, height: "100%" }, children: [
-    hovered ? /* @__PURE__ */ jsxs3(
+  return /* @__PURE__ */ jsxs4("box", { style: { flexDirection: "row", flexGrow: 1, height: "100%" }, children: [
+    hovered ? /* @__PURE__ */ jsxs4(
       "box",
       {
         style: {
@@ -991,8 +1150,8 @@ function App({ store }) {
           zIndex: 100
         },
         children: [
-          /* @__PURE__ */ jsx6("box", { style: { height: 1 }, children: /* @__PURE__ */ jsx6("text", { children: /* @__PURE__ */ jsx6("span", { style: { fg: theme.colors.attachment }, children: `\u{1F4CE} ${hovered.name}` }) }) }),
-          /* @__PURE__ */ jsx6(
+          /* @__PURE__ */ jsx7("box", { style: { height: 1 }, children: /* @__PURE__ */ jsx7("text", { children: /* @__PURE__ */ jsx7("span", { style: { fg: theme.colors.attachment }, children: `\u{1F4CE} ${hovered.name}` }) }) }),
+          /* @__PURE__ */ jsx7(
             KittyImage,
             {
               read: hovered.read,
@@ -1004,85 +1163,114 @@ function App({ store }) {
         ]
       }
     ) : null,
-    /* @__PURE__ */ jsx6(
+    /* @__PURE__ */ jsx7(
+      Sidebar,
+      {
+        chats: snapshot.chats,
+        activeChatId: snapshot.activeChatId,
+        store
+      }
+    ),
+    /* @__PURE__ */ jsxs4(
       "box",
       {
         style: {
-          height: 1,
-          paddingLeft: 1,
-          paddingRight: 1,
-          backgroundColor: theme.colors.border
-        },
-        children: /* @__PURE__ */ jsxs3("text", { children: [
-          /* @__PURE__ */ jsx6("span", { style: { fg: theme.colors.user }, children: ` ${theme.title} ` }),
-          /* @__PURE__ */ jsx6("span", { style: { fg: theme.colors.system }, children: " \u2014 Ctrl+C exit \xB7 Ctrl+L clear \xB7 Tab complete \xB7 Esc cancel \xB7 drop files to attach" })
-        ] })
-      }
-    ),
-    /* @__PURE__ */ jsx6(
-      "scrollbox",
-      {
-        focused: true,
-        style: {
-          flexGrow: 1,
-          paddingLeft: 1,
-          paddingRight: 1,
-          stickyScroll: true,
-          stickyStart: "bottom",
-          contentOptions: {
-            flexDirection: "column",
-            justifyContent: "flex-end",
-            minHeight: "100%"
-          },
-          scrollbarOptions: {
-            visible: true
-          }
-        },
-        children: snapshot.entries.map((entry) => /* @__PURE__ */ jsx6(MessageItem, { entry, store }, entry.id))
-      }
-    ),
-    /* @__PURE__ */ jsx6(
-      "box",
-      {
-        style: {
-          height: 1,
-          paddingLeft: 1,
-          paddingRight: 1
-        },
-        children: /* @__PURE__ */ jsx6("text", { children: snapshot.typing ? /* @__PURE__ */ jsx6("span", { style: { fg: theme.colors.typing }, children: "\u25CF agent is typing\u2026" }) : /* @__PURE__ */ jsx6("span", { style: { fg: theme.colors.system }, children: " " }) })
-      }
-    ),
-    /* @__PURE__ */ jsxs3(
-      "box",
-      {
-        style: {
-          border: true,
-          borderStyle: "rounded",
-          borderColor: theme.colors.border,
           flexDirection: "column",
-          flexShrink: 0,
-          height: inputContainerHeight,
-          paddingLeft: 1,
-          paddingRight: 1
+          flexGrow: 1,
+          height: "100%"
         },
         children: [
-          snapshot.pendingAttachments.length > 0 ? /* @__PURE__ */ jsx6(Attachments, { pending: snapshot.pendingAttachments }) : null,
-          showSuggestions ? /* @__PURE__ */ jsx6(Suggestions, { matches, selectedIndex: tabIndex }) : null,
-          /* @__PURE__ */ jsx6("box", { style: { height: 1, flexShrink: 0 }, children: /* @__PURE__ */ jsx6(
-            "input",
+          /* @__PURE__ */ jsx7(
+            "box",
+            {
+              style: {
+                height: 1,
+                paddingLeft: 1,
+                paddingRight: 1,
+                backgroundColor: theme.colors.border
+              },
+              children: /* @__PURE__ */ jsxs4("text", { children: [
+                /* @__PURE__ */ jsx7("span", { style: { fg: theme.colors.user }, children: ` ${theme.title}${activeId ? ` \xB7 ${activeId}` : ""} ` }),
+                /* @__PURE__ */ jsx7("span", { style: { fg: theme.colors.system }, children: " \u2014 Ctrl+N new \xB7 Ctrl+J/K nav \xB7 Ctrl+C exit \xB7 Ctrl+L clear \xB7 Tab complete \xB7 Esc cancel" })
+              ] })
+            }
+          ),
+          /* @__PURE__ */ jsx7(
+            "scrollbox",
             {
               focused: true,
-              placeholder: "type a message and press enter\u2026",
-              value: inputValue,
-              onInput: handleInput,
-              onSubmit: handleSubmit,
               style: {
-                textColor: theme.colors.input,
-                placeholderColor: theme.colors.system,
-                cursorColor: theme.colors.prompt
-              }
+                flexGrow: 1,
+                paddingLeft: 1,
+                paddingRight: 1,
+                stickyScroll: true,
+                stickyStart: "bottom",
+                contentOptions: {
+                  flexDirection: "column",
+                  justifyContent: "flex-end",
+                  minHeight: "100%"
+                },
+                scrollbarOptions: {
+                  visible: true
+                }
+              },
+              children: activeId ? entries.map((entry) => /* @__PURE__ */ jsx7(
+                MessageItem,
+                {
+                  entry,
+                  entries,
+                  chatId: activeId,
+                  store
+                },
+                entry.id
+              )) : null
             }
-          ) })
+          ),
+          /* @__PURE__ */ jsx7(
+            "box",
+            {
+              style: {
+                height: 1,
+                paddingLeft: 1,
+                paddingRight: 1
+              },
+              children: /* @__PURE__ */ jsx7("text", { children: typing ? /* @__PURE__ */ jsx7("span", { style: { fg: theme.colors.typing }, children: "\u25CF agent is typing\u2026" }) : /* @__PURE__ */ jsx7("span", { style: { fg: theme.colors.system }, children: " " }) })
+            }
+          ),
+          /* @__PURE__ */ jsxs4(
+            "box",
+            {
+              style: {
+                border: true,
+                borderStyle: "rounded",
+                borderColor: theme.colors.border,
+                flexDirection: "column",
+                flexShrink: 0,
+                height: inputContainerHeight,
+                paddingLeft: 1,
+                paddingRight: 1
+              },
+              children: [
+                pendingAttachments.length > 0 ? /* @__PURE__ */ jsx7(Attachments, { pending: pendingAttachments }) : null,
+                showSuggestions ? /* @__PURE__ */ jsx7(Suggestions, { matches, selectedIndex: tabIndex }) : null,
+                /* @__PURE__ */ jsx7("box", { style: { height: 1, flexShrink: 0 }, children: /* @__PURE__ */ jsx7(
+                  "input",
+                  {
+                    focused: true,
+                    placeholder: activeId ? "type a message and press enter\u2026" : "Ctrl+N to start a new chat",
+                    value: inputValue,
+                    onInput: handleInput,
+                    onSubmit: handleSubmit,
+                    style: {
+                      textColor: theme.colors.input,
+                      placeholderColor: theme.colors.system,
+                      cursorColor: theme.colors.prompt
+                    }
+                  }
+                ) })
+              ]
+            }
+          )
         ]
       }
     )
@@ -1094,7 +1282,7 @@ function MountedApp({ store }) {
       store.closeInput();
     };
   }, [store]);
-  return /* @__PURE__ */ jsx6(App, { store });
+  return /* @__PURE__ */ jsx7(App, { store });
 }
 
 // src/store.ts
@@ -1104,49 +1292,84 @@ var newId = () => {
   }
   return `id-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 };
+function emptyChatState(id) {
+  const now = /* @__PURE__ */ new Date();
+  return {
+    id,
+    entries: [],
+    typing: false,
+    pendingAttachments: [],
+    inputDraft: "",
+    lastActivityAt: now,
+    createdAt: now
+  };
+}
+function sortChats(chats) {
+  return [...chats].sort(
+    (a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
+  );
+}
 function createStore(options) {
-  let entries = [];
-  let typing = false;
-  let pendingAttachments = [];
+  const chats = /* @__PURE__ */ new Map();
+  let activeChatId = null;
   let hoveredPreview = null;
   const commands = options?.commands ?? [];
-  let snapshot = {
-    entries,
-    typing,
-    commands,
-    pendingAttachments,
-    hoveredPreview
-  };
-  const listeners = /* @__PURE__ */ new Set();
+  let nextChatIndex = 1;
   const inputBuffer = [];
   const waiters = [];
   let inputClosed = false;
+  let snapshot = {
+    chats: [],
+    activeChatId: null,
+    commands,
+    hoveredPreview
+  };
+  const listeners = /* @__PURE__ */ new Set();
   const commit = () => {
     snapshot = {
-      entries,
-      typing,
+      chats: sortChats(Array.from(chats.values())),
+      activeChatId,
       commands,
-      pendingAttachments,
       hoveredPreview
     };
     for (const l of listeners) l();
   };
-  const append = (role, content, opts) => {
-    const id = newId();
-    entries = [
-      ...entries,
-      {
-        id,
-        role,
-        content,
-        timestamp: /* @__PURE__ */ new Date(),
-        replyTo: opts?.replyTo,
-        reactions: [],
-        attachmentPath: opts?.attachmentPath
-      }
-    ];
-    commit();
+  const updateChat = (id, updater) => {
+    const chat = chats.get(id);
+    if (!chat) return false;
+    chats.set(id, updater(chat));
+    return true;
+  };
+  const generateChatId = () => {
+    while (chats.has(`chat-${nextChatIndex}`)) nextChatIndex += 1;
+    const id = `chat-${nextChatIndex}`;
+    nextChatIndex += 1;
     return id;
+  };
+  const ensureChatInternal = (id) => {
+    if (chats.has(id)) return false;
+    chats.set(id, emptyChatState(id));
+    return true;
+  };
+  const append = (chatId, role, content, opts) => {
+    const entryId = newId();
+    const entry = {
+      id: entryId,
+      role,
+      content,
+      timestamp: /* @__PURE__ */ new Date(),
+      replyTo: opts?.replyTo,
+      reactions: [],
+      attachmentPath: opts?.attachmentPath
+    };
+    ensureChatInternal(chatId);
+    updateChat(chatId, (c) => ({
+      ...c,
+      entries: [...c.entries, entry],
+      lastActivityAt: entry.timestamp
+    }));
+    commit();
+    return entryId;
   };
   return {
     subscribe(listener) {
@@ -1156,49 +1379,93 @@ function createStore(options) {
     getSnapshot() {
       return snapshot;
     },
-    appendAgent(content, opts) {
-      return append("agent", content, { replyTo: opts?.replyTo });
+    newChat() {
+      const id = generateChatId();
+      ensureChatInternal(id);
+      activeChatId = id;
+      commit();
+      return id;
     },
-    appendUser(content, opts) {
-      return append("user", content, { attachmentPath: opts?.attachmentPath });
+    ensureChat(id) {
+      const created = ensureChatInternal(id);
+      if (created) {
+        if (activeChatId === null) activeChatId = id;
+        commit();
+      }
     },
-    appendSystem(text) {
-      append("system", { type: "text", text });
-    },
-    setTyping(value) {
-      if (typing === value) return;
-      typing = value;
+    setActiveChat(id) {
+      if (!chats.has(id)) return;
+      if (activeChatId === id) return;
+      activeChatId = id;
       commit();
     },
-    react(messageId, emoji) {
-      const idx = entries.findIndex((e) => e.id === messageId);
+    cycleActiveChat(delta) {
+      const sorted = sortChats(Array.from(chats.values()));
+      if (sorted.length === 0) return;
+      const idx = sorted.findIndex((c) => c.id === activeChatId);
+      const nextIdx = idx < 0 ? 0 : (idx + delta + sorted.length) % sorted.length;
+      const next = sorted[nextIdx];
+      if (next.id === activeChatId) return;
+      activeChatId = next.id;
+      commit();
+    },
+    appendAgent(chatId, content, opts) {
+      return append(chatId, "agent", content, { replyTo: opts?.replyTo });
+    },
+    appendUser(chatId, content, opts) {
+      return append(chatId, "user", content, {
+        attachmentPath: opts?.attachmentPath
+      });
+    },
+    appendSystem(chatId, text) {
+      append(chatId, "system", { type: "text", text });
+    },
+    setTyping(chatId, value) {
+      const chat = chats.get(chatId);
+      if (!chat || chat.typing === value) return;
+      updateChat(chatId, (c) => ({ ...c, typing: value }));
+      commit();
+    },
+    react(chatId, messageId, emoji) {
+      const chat = chats.get(chatId);
+      if (!chat) return;
+      const idx = chat.entries.findIndex((e) => e.id === messageId);
       if (idx < 0) return;
-      const entry = entries[idx];
-      entries = [
-        ...entries.slice(0, idx),
-        { ...entry, reactions: [...entry.reactions, emoji] },
-        ...entries.slice(idx + 1)
-      ];
+      const entry = chat.entries[idx];
+      updateChat(chatId, (c) => ({
+        ...c,
+        entries: [
+          ...c.entries.slice(0, idx),
+          { ...entry, reactions: [...entry.reactions, emoji] },
+          ...c.entries.slice(idx + 1)
+        ]
+      }));
       commit();
     },
-    patchEntry(id, patch) {
-      const idx = entries.findIndex((e) => e.id === id);
+    patchEntry(chatId, messageId, patch) {
+      const chat = chats.get(chatId);
+      if (!chat) return;
+      const idx = chat.entries.findIndex((e) => e.id === messageId);
       if (idx < 0) return;
-      const entry = entries[idx];
-      entries = [
-        ...entries.slice(0, idx),
-        { ...entry, ...patch },
-        ...entries.slice(idx + 1)
-      ];
+      const entry = chat.entries[idx];
+      updateChat(chatId, (c) => ({
+        ...c,
+        entries: [
+          ...c.entries.slice(0, idx),
+          { ...entry, ...patch },
+          ...c.entries.slice(idx + 1)
+        ]
+      }));
       commit();
     },
-    pushUserInput(content) {
+    pushUserInput(chatId, content) {
       if (inputClosed) return;
+      const item = { chatId, content };
       const waiter = waiters.shift();
       if (waiter) {
-        waiter.resolve({ value: content, done: false });
+        waiter.resolve({ value: item, done: false });
       } else {
-        inputBuffer.push(content);
+        inputBuffer.push(item);
       }
     },
     nextUserInput() {
@@ -1215,8 +1482,8 @@ function createStore(options) {
           done: false
         });
       }
-      return new Promise((resolve, reject) => {
-        waiters.push({ resolve, reject });
+      return new Promise((resolve) => {
+        waiters.push({ resolve });
       });
     },
     closeInput() {
@@ -1227,26 +1494,43 @@ function createStore(options) {
         w?.resolve({ value: void 0, done: true });
       }
     },
-    addPendingAttachment(att) {
-      if (pendingAttachments.some((a) => a.path === att.path)) return;
-      pendingAttachments = [...pendingAttachments, att];
+    addPendingAttachment(chatId, att) {
+      const chat = chats.get(chatId);
+      if (!chat) return;
+      if (chat.pendingAttachments.some((a) => a.path === att.path)) return;
+      updateChat(chatId, (c) => ({
+        ...c,
+        pendingAttachments: [...c.pendingAttachments, att]
+      }));
       commit();
     },
-    removePendingAttachment(index) {
-      if (index < 0 || index >= pendingAttachments.length) return;
-      pendingAttachments = [
-        ...pendingAttachments.slice(0, index),
-        ...pendingAttachments.slice(index + 1)
-      ];
+    removePendingAttachment(chatId, index) {
+      const chat = chats.get(chatId);
+      if (!chat) return;
+      if (index < 0 || index >= chat.pendingAttachments.length) return;
+      updateChat(chatId, (c) => ({
+        ...c,
+        pendingAttachments: [
+          ...c.pendingAttachments.slice(0, index),
+          ...c.pendingAttachments.slice(index + 1)
+        ]
+      }));
       commit();
     },
-    clearPendingAttachments() {
-      if (pendingAttachments.length === 0) return;
-      pendingAttachments = [];
+    clearPendingAttachments(chatId) {
+      const chat = chats.get(chatId);
+      if (!chat || chat.pendingAttachments.length === 0) return;
+      updateChat(chatId, (c) => ({ ...c, pendingAttachments: [] }));
+      commit();
+    },
+    setInputDraft(chatId, value) {
+      const chat = chats.get(chatId);
+      if (!chat || chat.inputDraft === value) return;
+      updateChat(chatId, (c) => ({ ...c, inputDraft: value }));
       commit();
     },
     setHoveredPreview(preview) {
-      if ((hoveredPreview?.cacheKey ?? null) === (preview?.cacheKey ?? null) && hoveredPreview === preview) {
+      if (hoveredPreview === null && preview === null) {
         return;
       }
       if (hoveredPreview !== null && preview !== null && hoveredPreview.cacheKey === preview.cacheKey) {
@@ -1261,6 +1545,7 @@ function createStore(options) {
 // src/client.ts
 async function createTuichatClient(options) {
   const store = createStore({ commands: options?.commands });
+  store.newChat();
   const renderer = await createCliRenderer({
     exitOnCtrlC: false
   });
@@ -1297,7 +1582,13 @@ var tuichat = definePlatform("tuichat", {
     resolve: async () => ({ id: "tuichat-user" })
   },
   space: {
-    resolve: async () => ({ id: "tuichat" })
+    params: z.object({ id: z.string().optional() }),
+    resolve: async (ctx) => {
+      const client = ctx.client;
+      const id = ctx.input.params?.id ?? client.store.newChat();
+      client.store.ensureChat(id);
+      return { id };
+    }
   },
   lifecycle: {
     createClient: async ({ config }) => {
@@ -1308,36 +1599,46 @@ var tuichat = definePlatform("tuichat", {
     }
   },
   events: {
-    async *messages({ client }) {
+    async *messages(ctx) {
+      const client = ctx.client;
       const { store } = client;
       while (true) {
         const result = await store.nextUserInput();
         if (result.done) return;
         yield {
           id: crypto.randomUUID(),
-          content: result.value,
+          content: result.value.content,
           sender: { id: "tuichat-user" },
-          space: { id: "tuichat" },
+          space: { id: result.value.chatId },
           timestamp: /* @__PURE__ */ new Date()
         };
       }
     }
   },
   actions: {
-    send: async ({ client, content }) => {
-      client.store.appendAgent(content);
+    send: async (ctx) => {
+      const client = ctx.client;
+      client.store.ensureChat(ctx.space.id);
+      client.store.appendAgent(ctx.space.id, ctx.content);
     },
-    startTyping: async ({ client }) => {
-      client.store.setTyping(true);
+    startTyping: async (ctx) => {
+      const client = ctx.client;
+      client.store.setTyping(ctx.space.id, true);
     },
-    stopTyping: async ({ client }) => {
-      client.store.setTyping(false);
+    stopTyping: async (ctx) => {
+      const client = ctx.client;
+      client.store.setTyping(ctx.space.id, false);
     },
-    reactToMessage: async ({ client, messageId, reaction }) => {
-      client.store.react(messageId, reaction);
+    reactToMessage: async (ctx) => {
+      const client = ctx.client;
+      client.store.react(ctx.space.id, ctx.messageId, ctx.reaction);
     },
-    replyToMessage: async ({ client, messageId, content }) => {
-      client.store.appendAgent(content, { replyTo: messageId });
+    replyToMessage: async (ctx) => {
+      const client = ctx.client;
+      client.store.ensureChat(ctx.space.id);
+      client.store.appendAgent(ctx.space.id, ctx.content, {
+        replyTo: ctx.messageId
+      });
     }
   }
 });

@@ -29,36 +29,67 @@ export interface HoveredPreview {
   read: () => Promise<Buffer>;
 }
 
-export interface Snapshot {
+export interface ChatState {
+  id: string;
   entries: readonly LogEntry[];
   typing: boolean;
-  commands: readonly CommandDef[];
   pendingAttachments: readonly PendingAttachment[];
+  inputDraft: string;
+  lastActivityAt: Date;
+  createdAt: Date;
+}
+
+export interface Snapshot {
+  chats: readonly ChatState[];
+  activeChatId: string | null;
+  commands: readonly CommandDef[];
   hoveredPreview: HoveredPreview | null;
+}
+
+interface UserInputItem {
+  chatId: string;
+  content: Content;
 }
 
 type Listener = () => void;
 
 interface PendingInput {
-  resolve: (value: IteratorResult<Content>) => void;
-  reject: (err: unknown) => void;
+  resolve: (value: IteratorResult<UserInputItem>) => void;
 }
 
 export interface Store {
   subscribe(listener: Listener): () => void;
   getSnapshot(): Snapshot;
-  appendAgent(content: Content, opts?: { replyTo?: string }): string;
-  appendUser(content: Content, opts?: { attachmentPath?: string }): string;
-  appendSystem(text: string): void;
-  setTyping(value: boolean): void;
-  react(messageId: string, emoji: string): void;
-  patchEntry(id: string, patch: Partial<LogEntry>): void;
-  pushUserInput(content: Content): void;
-  nextUserInput(): Promise<IteratorResult<Content>>;
+
+  newChat(): string;
+  ensureChat(id: string): void;
+  setActiveChat(id: string): void;
+  cycleActiveChat(delta: 1 | -1): void;
+
+  appendAgent(
+    chatId: string,
+    content: Content,
+    opts?: { replyTo?: string }
+  ): string;
+  appendUser(
+    chatId: string,
+    content: Content,
+    opts?: { attachmentPath?: string }
+  ): string;
+  appendSystem(chatId: string, text: string): void;
+  setTyping(chatId: string, value: boolean): void;
+  react(chatId: string, messageId: string, emoji: string): void;
+  patchEntry(chatId: string, messageId: string, patch: Partial<LogEntry>): void;
+
+  pushUserInput(chatId: string, content: Content): void;
+  nextUserInput(): Promise<IteratorResult<UserInputItem>>;
   closeInput(): void;
-  addPendingAttachment(att: PendingAttachment): void;
-  removePendingAttachment(index: number): void;
-  clearPendingAttachments(): void;
+
+  addPendingAttachment(chatId: string, att: PendingAttachment): void;
+  removePendingAttachment(chatId: string, index: number): void;
+  clearPendingAttachments(chatId: string): void;
+
+  setInputDraft(chatId: string, value: string): void;
   setHoveredPreview(preview: HoveredPreview | null): void;
 }
 
@@ -69,58 +100,103 @@ const newId = (): string => {
   return `id-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 };
 
+function emptyChatState(id: string): ChatState {
+  const now = new Date();
+  return {
+    id,
+    entries: [],
+    typing: false,
+    pendingAttachments: [],
+    inputDraft: "",
+    lastActivityAt: now,
+    createdAt: now,
+  };
+}
+
+function sortChats(chats: readonly ChatState[]): readonly ChatState[] {
+  return [...chats].sort(
+    (a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
+  );
+}
+
 export function createStore(options?: {
   commands?: readonly CommandDef[];
 }): Store {
-  let entries: LogEntry[] = [];
-  let typing = false;
-  let pendingAttachments: PendingAttachment[] = [];
+  const chats = new Map<string, ChatState>();
+  let activeChatId: string | null = null;
   let hoveredPreview: HoveredPreview | null = null;
   const commands: readonly CommandDef[] = options?.commands ?? [];
+  let nextChatIndex = 1;
+
+  const inputBuffer: UserInputItem[] = [];
+  const waiters: PendingInput[] = [];
+  let inputClosed = false;
+
   let snapshot: Snapshot = {
-    entries,
-    typing,
+    chats: [],
+    activeChatId: null,
     commands,
-    pendingAttachments,
     hoveredPreview,
   };
   const listeners = new Set<Listener>();
 
-  const inputBuffer: Content[] = [];
-  const waiters: PendingInput[] = [];
-  let inputClosed = false;
-
   const commit = () => {
     snapshot = {
-      entries,
-      typing,
+      chats: sortChats(Array.from(chats.values())),
+      activeChatId,
       commands,
-      pendingAttachments,
       hoveredPreview,
     };
     for (const l of listeners) l();
   };
 
+  const updateChat = (
+    id: string,
+    updater: (chat: ChatState) => ChatState
+  ): boolean => {
+    const chat = chats.get(id);
+    if (!chat) return false;
+    chats.set(id, updater(chat));
+    return true;
+  };
+
+  const generateChatId = (): string => {
+    while (chats.has(`chat-${nextChatIndex}`)) nextChatIndex += 1;
+    const id = `chat-${nextChatIndex}`;
+    nextChatIndex += 1;
+    return id;
+  };
+
+  const ensureChatInternal = (id: string): boolean => {
+    if (chats.has(id)) return false;
+    chats.set(id, emptyChatState(id));
+    return true;
+  };
+
   const append = (
+    chatId: string,
     role: Role,
     content: Content,
     opts?: { replyTo?: string; attachmentPath?: string }
   ): string => {
-    const id = newId();
-    entries = [
-      ...entries,
-      {
-        id,
-        role,
-        content,
-        timestamp: new Date(),
-        replyTo: opts?.replyTo,
-        reactions: [],
-        attachmentPath: opts?.attachmentPath,
-      },
-    ];
+    const entryId = newId();
+    const entry: LogEntry = {
+      id: entryId,
+      role,
+      content,
+      timestamp: new Date(),
+      replyTo: opts?.replyTo,
+      reactions: [],
+      attachmentPath: opts?.attachmentPath,
+    };
+    ensureChatInternal(chatId);
+    updateChat(chatId, (c) => ({
+      ...c,
+      entries: [...c.entries, entry],
+      lastActivityAt: entry.timestamp,
+    }));
     commit();
-    return id;
+    return entryId;
   };
 
   return {
@@ -133,74 +209,123 @@ export function createStore(options?: {
       return snapshot;
     },
 
-    appendAgent(content, opts) {
-      return append("agent", content, { replyTo: opts?.replyTo });
+    newChat() {
+      const id = generateChatId();
+      ensureChatInternal(id);
+      activeChatId = id;
+      commit();
+      return id;
     },
 
-    appendUser(content, opts) {
-      return append("user", content, { attachmentPath: opts?.attachmentPath });
+    ensureChat(id) {
+      const created = ensureChatInternal(id);
+      if (created) {
+        if (activeChatId === null) activeChatId = id;
+        commit();
+      }
     },
 
-    appendSystem(text) {
-      append("system", { type: "text", text });
-    },
-
-    setTyping(value) {
-      if (typing === value) return;
-      typing = value;
+    setActiveChat(id) {
+      if (!chats.has(id)) return;
+      if (activeChatId === id) return;
+      activeChatId = id;
       commit();
     },
 
-    react(messageId, emoji) {
-      const idx = entries.findIndex((e) => e.id === messageId);
+    cycleActiveChat(delta) {
+      const sorted = sortChats(Array.from(chats.values()));
+      if (sorted.length === 0) return;
+      const idx = sorted.findIndex((c) => c.id === activeChatId);
+      const nextIdx =
+        idx < 0 ? 0 : (idx + delta + sorted.length) % sorted.length;
+      const next = sorted[nextIdx]!;
+      if (next.id === activeChatId) return;
+      activeChatId = next.id;
+      commit();
+    },
+
+    appendAgent(chatId, content, opts) {
+      return append(chatId, "agent", content, { replyTo: opts?.replyTo });
+    },
+
+    appendUser(chatId, content, opts) {
+      return append(chatId, "user", content, {
+        attachmentPath: opts?.attachmentPath,
+      });
+    },
+
+    appendSystem(chatId, text) {
+      append(chatId, "system", { type: "text", text });
+    },
+
+    setTyping(chatId, value) {
+      const chat = chats.get(chatId);
+      if (!chat || chat.typing === value) return;
+      updateChat(chatId, (c) => ({ ...c, typing: value }));
+      commit();
+    },
+
+    react(chatId, messageId, emoji) {
+      const chat = chats.get(chatId);
+      if (!chat) return;
+      const idx = chat.entries.findIndex((e) => e.id === messageId);
       if (idx < 0) return;
-      const entry = entries[idx]!;
-      entries = [
-        ...entries.slice(0, idx),
-        { ...entry, reactions: [...entry.reactions, emoji] },
-        ...entries.slice(idx + 1),
-      ];
+      const entry = chat.entries[idx]!;
+      updateChat(chatId, (c) => ({
+        ...c,
+        entries: [
+          ...c.entries.slice(0, idx),
+          { ...entry, reactions: [...entry.reactions, emoji] },
+          ...c.entries.slice(idx + 1),
+        ],
+      }));
       commit();
     },
 
-    patchEntry(id, patch) {
-      const idx = entries.findIndex((e) => e.id === id);
+    patchEntry(chatId, messageId, patch) {
+      const chat = chats.get(chatId);
+      if (!chat) return;
+      const idx = chat.entries.findIndex((e) => e.id === messageId);
       if (idx < 0) return;
-      const entry = entries[idx]!;
-      entries = [
-        ...entries.slice(0, idx),
-        { ...entry, ...patch },
-        ...entries.slice(idx + 1),
-      ];
+      const entry = chat.entries[idx]!;
+      updateChat(chatId, (c) => ({
+        ...c,
+        entries: [
+          ...c.entries.slice(0, idx),
+          { ...entry, ...patch },
+          ...c.entries.slice(idx + 1),
+        ],
+      }));
       commit();
     },
 
-    pushUserInput(content) {
+    pushUserInput(chatId, content) {
       if (inputClosed) return;
+      const item: UserInputItem = { chatId, content };
       const waiter = waiters.shift();
       if (waiter) {
-        waiter.resolve({ value: content, done: false });
+        waiter.resolve({ value: item, done: false });
       } else {
-        inputBuffer.push(content);
+        inputBuffer.push(item);
       }
     },
 
     nextUserInput() {
       if (inputClosed) {
-        return Promise.resolve<IteratorResult<Content>>({
+        return Promise.resolve<IteratorResult<UserInputItem>>({
           value: undefined,
           done: true,
         });
       }
       const buffered = inputBuffer.shift();
       if (buffered !== undefined) {
-        return Promise.resolve<IteratorResult<Content>>({
+        return Promise.resolve<IteratorResult<UserInputItem>>({
           value: buffered,
           done: false,
         });
       }
-      return new Promise<IteratorResult<Content>>((resolve, reject) => {
-        waiters.push({ resolve, reject });
+      return new Promise<IteratorResult<UserInputItem>>((resolve) => {
+        waiters.push({ resolve });
       });
     },
 
@@ -213,31 +338,49 @@ export function createStore(options?: {
       }
     },
 
-    addPendingAttachment(att) {
-      if (pendingAttachments.some((a) => a.path === att.path)) return;
-      pendingAttachments = [...pendingAttachments, att];
+    addPendingAttachment(chatId, att) {
+      const chat = chats.get(chatId);
+      if (!chat) return;
+      if (chat.pendingAttachments.some((a) => a.path === att.path)) return;
+      updateChat(chatId, (c) => ({
+        ...c,
+        pendingAttachments: [...c.pendingAttachments, att],
+      }));
       commit();
     },
 
-    removePendingAttachment(index) {
-      if (index < 0 || index >= pendingAttachments.length) return;
-      pendingAttachments = [
-        ...pendingAttachments.slice(0, index),
-        ...pendingAttachments.slice(index + 1),
-      ];
+    removePendingAttachment(chatId, index) {
+      const chat = chats.get(chatId);
+      if (!chat) return;
+      if (index < 0 || index >= chat.pendingAttachments.length) return;
+      updateChat(chatId, (c) => ({
+        ...c,
+        pendingAttachments: [
+          ...c.pendingAttachments.slice(0, index),
+          ...c.pendingAttachments.slice(index + 1),
+        ],
+      }));
       commit();
     },
 
-    clearPendingAttachments() {
-      if (pendingAttachments.length === 0) return;
-      pendingAttachments = [];
+    clearPendingAttachments(chatId) {
+      const chat = chats.get(chatId);
+      if (!chat || chat.pendingAttachments.length === 0) return;
+      updateChat(chatId, (c) => ({ ...c, pendingAttachments: [] }));
+      commit();
+    },
+
+    setInputDraft(chatId, value) {
+      const chat = chats.get(chatId);
+      if (!chat || chat.inputDraft === value) return;
+      updateChat(chatId, (c) => ({ ...c, inputDraft: value }));
       commit();
     },
 
     setHoveredPreview(preview) {
       if (
-        (hoveredPreview?.cacheKey ?? null) === (preview?.cacheKey ?? null) &&
-        hoveredPreview === preview
+        hoveredPreview === null &&
+        preview === null
       ) {
         return;
       }
@@ -253,3 +396,4 @@ export function createStore(options?: {
     },
   };
 }
+

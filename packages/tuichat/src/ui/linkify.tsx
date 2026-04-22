@@ -2,6 +2,13 @@ import type { ReactNode } from "react";
 
 const URL_REGEX = /https?:\/\/[^\s<>()\[\]{}]+/g;
 
+const OSC8_START = "\x1b]8;;";
+const OSC8_ST = "\x1b\\";
+
+export function wrapOSC8(url: string, text: string): string {
+  return `${OSC8_START}${url}${OSC8_ST}${text}${OSC8_START}${OSC8_ST}`;
+}
+
 export interface LinkifyColors {
   text: string;
   link: string;
@@ -22,13 +29,12 @@ export function linkify(text: string, colors: LinkifyColors): ReactNode[] {
       );
     }
     out.push(
-      <a
+      <span
         key={`l${i++}`}
-        href={match[0]}
-        style={{ fg: colors.link, attributes: 4 }}
+        style={{ fg: colors.link, attributes: 8 }}
       >
-        {match[0]}
-      </a>
+        {wrapOSC8(match[0], match[0])}
+      </span>
     );
     last = match.index + match[0].length;
   }

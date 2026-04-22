@@ -21,7 +21,13 @@ export const tuichat = definePlatform("tuichat", {
   },
 
   space: {
-    resolve: async () => ({ id: "tuichat" }),
+    params: z.object({ id: z.string().optional() }),
+    resolve: async (ctx) => {
+      const client = ctx.client as TuichatClient;
+      const id = ctx.input.params?.id ?? client.store.newChat();
+      client.store.ensureChat(id);
+      return { id };
+    },
   },
 
   lifecycle: {
@@ -30,21 +36,22 @@ export const tuichat = definePlatform("tuichat", {
     },
 
     destroyClient: async ({ client }) => {
-      await destroyTuichatClient(client);
+      await destroyTuichatClient(client as TuichatClient);
     },
   },
 
   events: {
-    async *messages({ client }) {
+    async *messages(ctx) {
+      const client = ctx.client as TuichatClient;
       const { store } = client;
       while (true) {
         const result = await store.nextUserInput();
         if (result.done) return;
         yield {
           id: crypto.randomUUID(),
-          content: result.value,
+          content: result.value.content,
           sender: { id: "tuichat-user" },
-          space: { id: "tuichat" },
+          space: { id: result.value.chatId },
           timestamp: new Date(),
         };
       }
@@ -52,24 +59,33 @@ export const tuichat = definePlatform("tuichat", {
   },
 
   actions: {
-    send: async ({ client, content }) => {
-      client.store.appendAgent(content);
+    send: async (ctx) => {
+      const client = ctx.client as TuichatClient;
+      client.store.ensureChat(ctx.space.id);
+      client.store.appendAgent(ctx.space.id, ctx.content);
     },
 
-    startTyping: async ({ client }) => {
-      client.store.setTyping(true);
+    startTyping: async (ctx) => {
+      const client = ctx.client as TuichatClient;
+      client.store.setTyping(ctx.space.id, true);
     },
 
-    stopTyping: async ({ client }) => {
-      client.store.setTyping(false);
+    stopTyping: async (ctx) => {
+      const client = ctx.client as TuichatClient;
+      client.store.setTyping(ctx.space.id, false);
     },
 
-    reactToMessage: async ({ client, messageId, reaction }) => {
-      client.store.react(messageId, reaction);
+    reactToMessage: async (ctx) => {
+      const client = ctx.client as TuichatClient;
+      client.store.react(ctx.space.id, ctx.messageId, ctx.reaction);
     },
 
-    replyToMessage: async ({ client, messageId, content }) => {
-      client.store.appendAgent(content, { replyTo: messageId });
+    replyToMessage: async (ctx) => {
+      const client = ctx.client as TuichatClient;
+      client.store.ensureChat(ctx.space.id);
+      client.store.appendAgent(ctx.space.id, ctx.content, {
+        replyTo: ctx.messageId,
+      });
     },
   },
 });
