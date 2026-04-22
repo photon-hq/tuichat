@@ -6,8 +6,8 @@
     "start": "bun run index.ts"
   },
   "dependencies": {
-    "spectrum-ts": "^0.4.0",
-    "tuichat": "workspace:*",
-    "tuichat-spectrum-ts": "workspace:*"
+    "@photon-ai/tuichat": "workspace:*",
+    "@photon-ai/tuichat-spectrum-ts": "workspace:*",
+    "spectrum-ts": "^0.4.0"
   }
 }

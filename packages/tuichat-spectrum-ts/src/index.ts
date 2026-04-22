@@ -14,7 +14,7 @@ import {
   MessageDecoder,
   type ProtocolContent,
   RpcSession,
-} from "tuichat";
+} from "@photon-ai/tuichat";
 
 interface ProtocolMessageNotification {
   id: string;

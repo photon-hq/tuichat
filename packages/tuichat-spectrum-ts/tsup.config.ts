@@ -7,5 +7,5 @@ export default defineConfig({
   clean: true,
   outDir: "dist",
   target: "esnext",
-  external: ["spectrum-ts", "zod", "tuichat"],
+  external: ["spectrum-ts", "zod", "@photon-ai/tuichat"],
 });

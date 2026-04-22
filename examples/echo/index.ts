@@ -1,5 +1,5 @@
 import { attachment, custom, Spectrum, text } from "spectrum-ts";
-import { terminalTui } from "tuichat-spectrum-ts";
+import { terminalTui } from "@photon-ai/tuichat-spectrum-ts";
 
 const app = await Spectrum({
   providers: [
