@@ -59,6 +59,7 @@ interface LogEntry {
     timestamp: Date;
     replyTo?: string;
     reactions: string[];
+    attachmentPath?: string;
 }
 interface PendingAttachment {
     path: string;
@@ -84,7 +85,9 @@ interface Store {
     appendAgent(content: Content$1, opts?: {
         replyTo?: string;
     }): string;
-    appendUser(content: Content$1): string;
+    appendUser(content: Content$1, opts?: {
+        attachmentPath?: string;
+    }): string;
     appendSystem(text: string): void;
     setTyping(value: boolean): void;
     react(messageId: string, emoji: string): void;

@@ -14,6 +14,7 @@ export interface LogEntry {
   timestamp: Date;
   replyTo?: string;
   reactions: string[];
+  attachmentPath?: string;
 }
 
 export interface PendingAttachment {
@@ -47,7 +48,7 @@ export interface Store {
   subscribe(listener: Listener): () => void;
   getSnapshot(): Snapshot;
   appendAgent(content: Content, opts?: { replyTo?: string }): string;
-  appendUser(content: Content): string;
+  appendUser(content: Content, opts?: { attachmentPath?: string }): string;
   appendSystem(text: string): void;
   setTyping(value: boolean): void;
   react(messageId: string, emoji: string): void;
@@ -100,11 +101,23 @@ export function createStore(options?: {
     for (const l of listeners) l();
   };
 
-  const append = (role: Role, content: Content, replyTo?: string): string => {
+  const append = (
+    role: Role,
+    content: Content,
+    opts?: { replyTo?: string; attachmentPath?: string }
+  ): string => {
     const id = newId();
     entries = [
       ...entries,
-      { id, role, content, timestamp: new Date(), replyTo, reactions: [] },
+      {
+        id,
+        role,
+        content,
+        timestamp: new Date(),
+        replyTo: opts?.replyTo,
+        reactions: [],
+        attachmentPath: opts?.attachmentPath,
+      },
     ];
     commit();
     return id;
@@ -121,11 +134,11 @@ export function createStore(options?: {
     },
 
     appendAgent(content, opts) {
-      return append("agent", content, opts?.replyTo);
+      return append("agent", content, { replyTo: opts?.replyTo });
     },
 
-    appendUser(content) {
-      return append("user", content);
+    appendUser(content, opts) {
+      return append("user", content, { attachmentPath: opts?.attachmentPath });
     },
 
     appendSystem(text) {

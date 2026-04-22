@@ -73,7 +73,7 @@ export function App({ store }: AppProps) {
       for (const p of pendings) {
         try {
           const content = await attachment(p.path, { name: p.name }).build();
-          store.appendUser(content);
+          store.appendUser(content, { attachmentPath: p.path });
           store.pushUserInput(content);
         } catch {
           store.appendSystem(`failed to attach "${p.name}"`);

@@ -5,6 +5,7 @@ import {
   supportsKittyGraphics,
 } from "../kitty";
 import type { LogEntry, Store } from "../store";
+import { linkify } from "./linkify";
 import { formatBytes, formatTime, roleColor, theme } from "./theme";
 
 interface MessageItemProps {
@@ -13,7 +14,8 @@ interface MessageItemProps {
 }
 
 export function MessageItem({ entry, store }: MessageItemProps) {
-  const { content, role, timestamp, reactions, replyTo } = entry;
+  const { content, role, timestamp, reactions, replyTo, attachmentPath } =
+    entry;
   const prefix = theme.prefix[role].padEnd(5, " ");
   const color = roleColor(role);
   const replyToEntry = replyTo
@@ -40,6 +42,7 @@ export function MessageItem({ entry, store }: MessageItemProps) {
         prefix={prefix}
         timestamp={timestamp}
         content={content}
+        attachmentPath={attachmentPath}
         store={store}
       />
 
@@ -68,6 +71,7 @@ interface ContentLineProps {
   prefix: string;
   timestamp: Date;
   content: LogEntry["content"];
+  attachmentPath?: string;
   store: Store;
 }
 
@@ -76,6 +80,7 @@ function ContentLine({
   prefix,
   timestamp,
   content,
+  attachmentPath,
   store,
 }: ContentLineProps) {
   const timeLabel = `[${formatTime(timestamp)}] `;
@@ -87,7 +92,10 @@ function ContentLine({
           <span style={{ fg: theme.colors.timestamp }}>{timeLabel}</span>
           <span style={{ fg: color }}>{prefix}</span>
           <span style={{ fg: theme.colors.border }}>{" › "}</span>
-          <span style={{ fg: theme.colors.input }}>{content.text}</span>
+          {linkify(content.text, {
+            text: theme.colors.input,
+            link: theme.colors.prompt,
+          })}
         </text>
       );
     case "attachment":
@@ -97,6 +105,7 @@ function ContentLine({
           prefix={prefix}
           timeLabel={timeLabel}
           content={content}
+          attachmentPath={attachmentPath}
           store={store}
         />
       );
@@ -127,6 +136,7 @@ interface AttachmentLineProps {
   prefix: string;
   timeLabel: string;
   content: Extract<LogEntry["content"], { type: "attachment" }>;
+  attachmentPath?: string;
   store: Store;
 }
 
@@ -135,6 +145,7 @@ function AttachmentLine({
   prefix,
   timeLabel,
   content,
+  attachmentPath,
   store,
 }: AttachmentLineProps) {
   const [resolvedSize, setResolvedSize] = useState<number | undefined>(
@@ -193,7 +204,20 @@ function AttachmentLine({
         <span style={{ fg: color }}>{prefix}</span>
         <span style={{ fg: theme.colors.border }}>{" › "}</span>
         <span style={{ fg: theme.colors.attachment }}>
-          {`[${canPreview ? "image" : "attachment"}: ${content.name}${sizeLabel}]`}
+          {`[${canPreview ? "image" : "attachment"}: `}
+        </span>
+        {attachmentPath ? (
+          <a
+            href={`file://${attachmentPath}`}
+            style={{ fg: theme.colors.attachment, attributes: 4 }}
+          >
+            {content.name}
+          </a>
+        ) : (
+          <span style={{ fg: theme.colors.attachment }}>{content.name}</span>
+        )}
+        <span style={{ fg: theme.colors.attachment }}>
+          {`${sizeLabel}]`}
         </span>
         {canPreview ? (
           <span style={{ fg: theme.colors.system }}>

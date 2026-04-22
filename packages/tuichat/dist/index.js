@@ -572,32 +572,71 @@ function KittyImage({
 
 // src/ui/MessageItem.tsx
 import { useEffect as useEffect2, useState as useState2 } from "react";
-import { jsx as jsx3, jsxs } from "@opentui/react/jsx-runtime";
+
+// src/ui/linkify.tsx
+import { jsx as jsx3 } from "@opentui/react/jsx-runtime";
+var URL_REGEX = /https?:\/\/[^\s<>()\[\]{}]+/g;
+function linkify(text, colors) {
+  const out = [];
+  let last = 0;
+  let i = 0;
+  URL_REGEX.lastIndex = 0;
+  let match;
+  while ((match = URL_REGEX.exec(text)) !== null) {
+    if (match.index > last) {
+      out.push(
+        /* @__PURE__ */ jsx3("span", { style: { fg: colors.text }, children: text.slice(last, match.index) }, `t${i++}`)
+      );
+    }
+    out.push(
+      /* @__PURE__ */ jsx3(
+        "a",
+        {
+          href: match[0],
+          style: { fg: colors.link, attributes: 4 },
+          children: match[0]
+        },
+        `l${i++}`
+      )
+    );
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) {
+    out.push(
+      /* @__PURE__ */ jsx3("span", { style: { fg: colors.text }, children: text.slice(last) }, `t${i++}`)
+    );
+  }
+  return out;
+}
+
+// src/ui/MessageItem.tsx
+import { jsx as jsx4, jsxs } from "@opentui/react/jsx-runtime";
 function MessageItem({ entry, store }) {
-  const { content, role, timestamp, reactions, replyTo } = entry;
+  const { content, role, timestamp, reactions, replyTo, attachmentPath } = entry;
   const prefix = theme.prefix[role].padEnd(5, " ");
   const color = roleColor(role);
   const replyToEntry = replyTo ? store.getSnapshot().entries.find((e) => e.id === replyTo) : void 0;
   return /* @__PURE__ */ jsxs("box", { style: { flexDirection: "column", marginBottom: 0 }, children: [
     replyToEntry ? /* @__PURE__ */ jsxs("text", { children: [
-      /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.border }, children: "  \u250C\u2500 " }),
-      /* @__PURE__ */ jsx3("span", { style: { fg: roleColor(replyToEntry.role) }, children: theme.prefix[replyToEntry.role] }),
-      /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.border }, children: ": " }),
-      /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.system }, children: quoteOf(replyToEntry) })
+      /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.border }, children: "  \u250C\u2500 " }),
+      /* @__PURE__ */ jsx4("span", { style: { fg: roleColor(replyToEntry.role) }, children: theme.prefix[replyToEntry.role] }),
+      /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.border }, children: ": " }),
+      /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.system }, children: quoteOf(replyToEntry) })
     ] }) : null,
-    /* @__PURE__ */ jsx3(
+    /* @__PURE__ */ jsx4(
       ContentLine,
       {
         color,
         prefix,
         timestamp,
         content,
+        attachmentPath,
         store
       }
     ),
     reactions.length > 0 ? /* @__PURE__ */ jsxs("text", { children: [
-      /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.border }, children: "       " }),
-      /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.system }, children: reactions.join(" ") })
+      /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.border }, children: "       " }),
+      /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.system }, children: reactions.join(" ") })
     ] }) : null
   ] });
 }
@@ -613,39 +652,44 @@ function ContentLine({
   prefix,
   timestamp,
   content,
+  attachmentPath,
   store
 }) {
   const timeLabel = `[${formatTime(timestamp)}] `;
   switch (content.type) {
     case "text":
       return /* @__PURE__ */ jsxs("text", { children: [
-        /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.timestamp }, children: timeLabel }),
-        /* @__PURE__ */ jsx3("span", { style: { fg: color }, children: prefix }),
-        /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.border }, children: " \u203A " }),
-        /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.input }, children: content.text })
+        /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.timestamp }, children: timeLabel }),
+        /* @__PURE__ */ jsx4("span", { style: { fg: color }, children: prefix }),
+        /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.border }, children: " \u203A " }),
+        linkify(content.text, {
+          text: theme.colors.input,
+          link: theme.colors.prompt
+        })
       ] });
     case "attachment":
-      return /* @__PURE__ */ jsx3(
+      return /* @__PURE__ */ jsx4(
         AttachmentLine,
         {
           color,
           prefix,
           timeLabel,
           content,
+          attachmentPath,
           store
         }
       );
     case "custom":
       return /* @__PURE__ */ jsxs("box", { style: { flexDirection: "column" }, children: [
         /* @__PURE__ */ jsxs("text", { children: [
-          /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.timestamp }, children: timeLabel }),
-          /* @__PURE__ */ jsx3("span", { style: { fg: color }, children: prefix }),
-          /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.border }, children: " \u203A " }),
-          /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.custom }, children: "[custom]" })
+          /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.timestamp }, children: timeLabel }),
+          /* @__PURE__ */ jsx4("span", { style: { fg: color }, children: prefix }),
+          /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.border }, children: " \u203A " }),
+          /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.custom }, children: "[custom]" })
         ] }),
         /* @__PURE__ */ jsxs("text", { children: [
-          /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.border }, children: "       " }),
-          /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.system }, children: safeStringify(content.raw) })
+          /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.border }, children: "       " }),
+          /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.system }, children: safeStringify(content.raw) })
         ] })
       ] });
     default:
@@ -657,6 +701,7 @@ function AttachmentLine({
   prefix,
   timeLabel,
   content,
+  attachmentPath,
   store
 }) {
   const [resolvedSize, setResolvedSize] = useState2(
@@ -689,18 +734,27 @@ function AttachmentLine({
     read: content.read
   }) : void 0;
   const onOut = canPreview ? () => store.setHoveredPreview(null) : void 0;
-  return /* @__PURE__ */ jsx3(
+  return /* @__PURE__ */ jsx4(
     "box",
     {
       style: { flexDirection: "column" },
       onMouseOver: onOver,
       onMouseOut: onOut,
       children: /* @__PURE__ */ jsxs("text", { children: [
-        /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.timestamp }, children: timeLabel }),
-        /* @__PURE__ */ jsx3("span", { style: { fg: color }, children: prefix }),
-        /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.border }, children: " \u203A " }),
-        /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.attachment }, children: `[${canPreview ? "image" : "attachment"}: ${content.name}${sizeLabel}]` }),
-        canPreview ? /* @__PURE__ */ jsx3("span", { style: { fg: theme.colors.system }, children: "  (hover to preview)" }) : null
+        /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.timestamp }, children: timeLabel }),
+        /* @__PURE__ */ jsx4("span", { style: { fg: color }, children: prefix }),
+        /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.border }, children: " \u203A " }),
+        /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.attachment }, children: `[${canPreview ? "image" : "attachment"}: ` }),
+        attachmentPath ? /* @__PURE__ */ jsx4(
+          "a",
+          {
+            href: `file://${attachmentPath}`,
+            style: { fg: theme.colors.attachment, attributes: 4 },
+            children: content.name
+          }
+        ) : /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.attachment }, children: content.name }),
+        /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.attachment }, children: `${sizeLabel}]` }),
+        canPreview ? /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.system }, children: "  (hover to preview)" }) : null
       ] })
     }
   );
@@ -714,7 +768,7 @@ function safeStringify(raw) {
 }
 
 // src/ui/Suggestions.tsx
-import { Fragment, jsx as jsx4, jsxs as jsxs2 } from "@opentui/react/jsx-runtime";
+import { Fragment, jsx as jsx5, jsxs as jsxs2 } from "@opentui/react/jsx-runtime";
 var MAX_VISIBLE = 5;
 function Suggestions({ matches, selectedIndex }) {
   if (matches.length === 0) return null;
@@ -741,7 +795,7 @@ function Suggestions({ matches, selectedIndex }) {
           const isSelected = start + i === selected;
           const rowBg = isSelected ? theme.colors.suggestionSelectedBg : theme.colors.suggestionBg;
           const name = cmd.name.padEnd(longestName, " ");
-          return /* @__PURE__ */ jsx4(
+          return /* @__PURE__ */ jsx5(
             "box",
             {
               style: {
@@ -751,7 +805,7 @@ function Suggestions({ matches, selectedIndex }) {
                 paddingRight: 1
               },
               children: /* @__PURE__ */ jsxs2("text", { children: [
-                /* @__PURE__ */ jsx4(
+                /* @__PURE__ */ jsx5(
                   "span",
                   {
                     style: {
@@ -761,7 +815,7 @@ function Suggestions({ matches, selectedIndex }) {
                     children: isSelected ? "\u203A " : "  "
                   }
                 ),
-                /* @__PURE__ */ jsx4(
+                /* @__PURE__ */ jsx5(
                   "span",
                   {
                     style: {
@@ -772,15 +826,15 @@ function Suggestions({ matches, selectedIndex }) {
                   }
                 ),
                 cmd.description ? /* @__PURE__ */ jsxs2(Fragment, { children: [
-                  /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.border, bg: rowBg }, children: "  \u2014 " }),
-                  /* @__PURE__ */ jsx4("span", { style: { fg: theme.colors.system, bg: rowBg }, children: cmd.description })
+                  /* @__PURE__ */ jsx5("span", { style: { fg: theme.colors.border, bg: rowBg }, children: "  \u2014 " }),
+                  /* @__PURE__ */ jsx5("span", { style: { fg: theme.colors.system, bg: rowBg }, children: cmd.description })
                 ] }) : null
               ] })
             },
             cmd.name
           );
         }),
-        overflow > 0 ? /* @__PURE__ */ jsx4(
+        overflow > 0 ? /* @__PURE__ */ jsx5(
           "box",
           {
             style: {
@@ -789,7 +843,7 @@ function Suggestions({ matches, selectedIndex }) {
               paddingLeft: 1,
               paddingRight: 1
             },
-            children: /* @__PURE__ */ jsx4("text", { children: /* @__PURE__ */ jsx4(
+            children: /* @__PURE__ */ jsx5("text", { children: /* @__PURE__ */ jsx5(
               "span",
               {
                 style: {
@@ -807,7 +861,7 @@ function Suggestions({ matches, selectedIndex }) {
 }
 
 // src/ui/App.tsx
-import { jsx as jsx5, jsxs as jsxs3 } from "@opentui/react/jsx-runtime";
+import { jsx as jsx6, jsxs as jsxs3 } from "@opentui/react/jsx-runtime";
 function filterCommands(commands, prefix) {
   if (!prefix.startsWith("/")) return [];
   const lower = prefix.toLowerCase();
@@ -852,7 +906,7 @@ function App({ store }) {
       for (const p of pendings) {
         try {
           const content = await attachment(p.path, { name: p.name }).build();
-          store.appendUser(content);
+          store.appendUser(content, { attachmentPath: p.path });
           store.pushUserInput(content);
         } catch {
           store.appendSystem(`failed to attach "${p.name}"`);
@@ -937,8 +991,8 @@ function App({ store }) {
           zIndex: 100
         },
         children: [
-          /* @__PURE__ */ jsx5("box", { style: { height: 1 }, children: /* @__PURE__ */ jsx5("text", { children: /* @__PURE__ */ jsx5("span", { style: { fg: theme.colors.attachment }, children: `\u{1F4CE} ${hovered.name}` }) }) }),
-          /* @__PURE__ */ jsx5(
+          /* @__PURE__ */ jsx6("box", { style: { height: 1 }, children: /* @__PURE__ */ jsx6("text", { children: /* @__PURE__ */ jsx6("span", { style: { fg: theme.colors.attachment }, children: `\u{1F4CE} ${hovered.name}` }) }) }),
+          /* @__PURE__ */ jsx6(
             KittyImage,
             {
               read: hovered.read,
@@ -950,7 +1004,7 @@ function App({ store }) {
         ]
       }
     ) : null,
-    /* @__PURE__ */ jsx5(
+    /* @__PURE__ */ jsx6(
       "box",
       {
         style: {
@@ -960,12 +1014,12 @@ function App({ store }) {
           backgroundColor: theme.colors.border
         },
         children: /* @__PURE__ */ jsxs3("text", { children: [
-          /* @__PURE__ */ jsx5("span", { style: { fg: theme.colors.user }, children: ` ${theme.title} ` }),
-          /* @__PURE__ */ jsx5("span", { style: { fg: theme.colors.system }, children: " \u2014 Ctrl+C exit \xB7 Ctrl+L clear \xB7 Tab complete \xB7 Esc cancel \xB7 drop files to attach" })
+          /* @__PURE__ */ jsx6("span", { style: { fg: theme.colors.user }, children: ` ${theme.title} ` }),
+          /* @__PURE__ */ jsx6("span", { style: { fg: theme.colors.system }, children: " \u2014 Ctrl+C exit \xB7 Ctrl+L clear \xB7 Tab complete \xB7 Esc cancel \xB7 drop files to attach" })
         ] })
       }
     ),
-    /* @__PURE__ */ jsx5(
+    /* @__PURE__ */ jsx6(
       "scrollbox",
       {
         focused: true,
@@ -984,10 +1038,10 @@ function App({ store }) {
             visible: true
           }
         },
-        children: snapshot.entries.map((entry) => /* @__PURE__ */ jsx5(MessageItem, { entry, store }, entry.id))
+        children: snapshot.entries.map((entry) => /* @__PURE__ */ jsx6(MessageItem, { entry, store }, entry.id))
       }
     ),
-    /* @__PURE__ */ jsx5(
+    /* @__PURE__ */ jsx6(
       "box",
       {
         style: {
@@ -995,7 +1049,7 @@ function App({ store }) {
           paddingLeft: 1,
           paddingRight: 1
         },
-        children: /* @__PURE__ */ jsx5("text", { children: snapshot.typing ? /* @__PURE__ */ jsx5("span", { style: { fg: theme.colors.typing }, children: "\u25CF agent is typing\u2026" }) : /* @__PURE__ */ jsx5("span", { style: { fg: theme.colors.system }, children: " " }) })
+        children: /* @__PURE__ */ jsx6("text", { children: snapshot.typing ? /* @__PURE__ */ jsx6("span", { style: { fg: theme.colors.typing }, children: "\u25CF agent is typing\u2026" }) : /* @__PURE__ */ jsx6("span", { style: { fg: theme.colors.system }, children: " " }) })
       }
     ),
     /* @__PURE__ */ jsxs3(
@@ -1012,9 +1066,9 @@ function App({ store }) {
           paddingRight: 1
         },
         children: [
-          snapshot.pendingAttachments.length > 0 ? /* @__PURE__ */ jsx5(Attachments, { pending: snapshot.pendingAttachments }) : null,
-          showSuggestions ? /* @__PURE__ */ jsx5(Suggestions, { matches, selectedIndex: tabIndex }) : null,
-          /* @__PURE__ */ jsx5("box", { style: { height: 1, flexShrink: 0 }, children: /* @__PURE__ */ jsx5(
+          snapshot.pendingAttachments.length > 0 ? /* @__PURE__ */ jsx6(Attachments, { pending: snapshot.pendingAttachments }) : null,
+          showSuggestions ? /* @__PURE__ */ jsx6(Suggestions, { matches, selectedIndex: tabIndex }) : null,
+          /* @__PURE__ */ jsx6("box", { style: { height: 1, flexShrink: 0 }, children: /* @__PURE__ */ jsx6(
             "input",
             {
               focused: true,
@@ -1040,7 +1094,7 @@ function MountedApp({ store }) {
       store.closeInput();
     };
   }, [store]);
-  return /* @__PURE__ */ jsx5(App, { store });
+  return /* @__PURE__ */ jsx6(App, { store });
 }
 
 // src/store.ts
@@ -1077,11 +1131,19 @@ function createStore(options) {
     };
     for (const l of listeners) l();
   };
-  const append = (role, content, replyTo) => {
+  const append = (role, content, opts) => {
     const id = newId();
     entries = [
       ...entries,
-      { id, role, content, timestamp: /* @__PURE__ */ new Date(), replyTo, reactions: [] }
+      {
+        id,
+        role,
+        content,
+        timestamp: /* @__PURE__ */ new Date(),
+        replyTo: opts?.replyTo,
+        reactions: [],
+        attachmentPath: opts?.attachmentPath
+      }
     ];
     commit();
     return id;
@@ -1095,10 +1157,10 @@ function createStore(options) {
       return snapshot;
     },
     appendAgent(content, opts) {
-      return append("agent", content, opts?.replyTo);
+      return append("agent", content, { replyTo: opts?.replyTo });
     },
-    appendUser(content) {
-      return append("user", content);
+    appendUser(content, opts) {
+      return append("user", content, { attachmentPath: opts?.attachmentPath });
     },
     appendSystem(text) {
       append("system", { type: "text", text });
