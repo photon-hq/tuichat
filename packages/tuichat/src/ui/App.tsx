@@ -11,6 +11,7 @@ import { attachment } from "spectrum-ts";
 import { extractDroppedPaths, resolveDroppedAttachment } from "../drop";
 import type { ChatState, CommandDef, Store } from "../store";
 import { Attachments } from "./Attachments";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { KittyImage } from "./KittyImage";
 import { MessageItem } from "./MessageItem";
 import { Sidebar } from "./Sidebar";
@@ -21,14 +22,43 @@ interface AppProps {
   store: Store;
 }
 
+const RESERVED_COMMANDS: CommandDef[] = [
+  { name: "/new", description: "start a new chat" },
+  { name: "/help", description: "show keybindings and env vars" },
+];
+
 function filterCommands(
   commands: readonly CommandDef[],
   prefix: string
 ): CommandDef[] {
   if (!prefix.startsWith("/")) return [];
   const lower = prefix.toLowerCase();
-  return commands.filter((c) => c.name.toLowerCase().startsWith(lower));
+  const merged = [...RESERVED_COMMANDS, ...commands];
+  return merged.filter((c) => c.name.toLowerCase().startsWith(lower));
 }
+
+const HELP_LINES = [
+  "tuichat — keybindings",
+  "  Ctrl+N         new chat",
+  "  Ctrl+J / K     cycle chats (down / up)",
+  "  Ctrl+L         clear active chat (adds a system marker)",
+  "  Ctrl+D         toggle debug overlay",
+  "  Ctrl+C         exit",
+  "  Tab            complete slash command",
+  "  Esc            cancel input + drop pending attachments",
+  "  drag file      attach (or paste its path)",
+  "  hover image    floating preview (Kitty/Ghostty)",
+  "slash commands",
+  "  /new           start a new chat",
+  "  /help          this message",
+  "environment variables",
+  "  TUICHAT_FORCE_TUI=1        force rich TUI even without a TTY",
+  "  TUICHAT_FORCE_PLAIN=1      force plain readline mode",
+  "  TUICHAT_QUIET=1            silence the plain-mode startup banner",
+  "  TUICHAT_DISABLE_IMAGES=1   disable Kitty graphics image previews",
+  "  TUICHAT_DEBUG_IMAGES=1     log APC sequences to /tmp/tuichat-images.log",
+  "  TUICHAT_DEBUG_LOG=<path>   override the debug log path",
+];
 
 const EMPTY_PENDING: readonly never[] = [];
 
@@ -99,6 +129,17 @@ export function App({ store }: AppProps) {
     if (text === "/new") {
       store.setInputDraft(currentId, "");
       store.newChat();
+      setInputValue("");
+      setPrefix("");
+      setTabIndex(0);
+      return;
+    }
+
+    if (text === "/help") {
+      store.setInputDraft(currentId, "");
+      for (const line of HELP_LINES) {
+        store.appendSystem(currentId, line);
+      }
       setInputValue("");
       setPrefix("");
       setTabIndex(0);
@@ -304,6 +345,13 @@ export function App({ store }: AppProps) {
             },
           }}
         >
+          {active && active.droppedCount > 0 ? (
+            <text>
+              <span style={{ fg: theme.colors.system }}>
+                {`… ${active.droppedCount} older message${active.droppedCount === 1 ? "" : "s"} dropped`}
+              </span>
+            </text>
+          ) : null}
           {activeId
             ? entries.map((entry) => (
                 <MessageItem
@@ -377,11 +425,23 @@ export function App({ store }: AppProps) {
   );
 }
 
-export function MountedApp({ store }: AppProps) {
+interface MountedAppProps extends AppProps {
+  onFatalError?: (error: unknown) => void;
+}
+
+export function MountedApp({ store, onFatalError }: MountedAppProps) {
   useEffect(() => {
     return () => {
       store.closeInput();
     };
   }, [store]);
-  return <App store={store} />;
+  return (
+    <ErrorBoundary
+      onError={(error) => {
+        onFatalError?.(error);
+      }}
+    >
+      <App store={store} />
+    </ErrorBoundary>
+  );
 }

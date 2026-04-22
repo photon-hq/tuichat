@@ -32,6 +32,7 @@ export interface HoveredPreview {
 export interface ChatState {
   id: string;
   entries: readonly LogEntry[];
+  droppedCount: number;
   typing: boolean;
   pendingAttachments: readonly PendingAttachment[];
   inputDraft: string;
@@ -69,7 +70,7 @@ export interface Store {
   appendAgent(
     chatId: string,
     content: Content,
-    opts?: { replyTo?: string }
+    opts?: { replyTo?: string; attachmentPath?: string }
   ): string;
   appendUser(
     chatId: string,
@@ -100,11 +101,14 @@ const newId = (): string => {
   return `id-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 };
 
+const SCROLLBACK_CAP = 2000;
+
 function emptyChatState(id: string): ChatState {
   const now = new Date();
   return {
     id,
     entries: [],
+    droppedCount: 0,
     typing: false,
     pendingAttachments: [],
     inputDraft: "",
@@ -190,11 +194,16 @@ export function createStore(options?: {
       attachmentPath: opts?.attachmentPath,
     };
     ensureChatInternal(chatId);
-    updateChat(chatId, (c) => ({
-      ...c,
-      entries: [...c.entries, entry],
-      lastActivityAt: entry.timestamp,
-    }));
+    updateChat(chatId, (c) => {
+      const next = [...c.entries, entry];
+      const overflow = Math.max(0, next.length - SCROLLBACK_CAP);
+      return {
+        ...c,
+        entries: overflow > 0 ? next.slice(overflow) : next,
+        droppedCount: c.droppedCount + overflow,
+        lastActivityAt: entry.timestamp,
+      };
+    });
     commit();
     return entryId;
   };
@@ -245,7 +254,10 @@ export function createStore(options?: {
     },
 
     appendAgent(chatId, content, opts) {
-      return append(chatId, "agent", content, { replyTo: opts?.replyTo });
+      return append(chatId, "agent", content, {
+        replyTo: opts?.replyTo,
+        attachmentPath: opts?.attachmentPath,
+      });
     },
 
     appendUser(chatId, content, opts) {
