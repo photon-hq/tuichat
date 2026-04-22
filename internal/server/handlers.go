@@ -58,9 +58,12 @@ func (s *Server) HandleRequest(method string, raw json.RawMessage) (any, error) 
 		}
 		attachmentPath := resolveAttachmentPath(p.Content)
 		s.Store.EnsureChat(p.SpaceID)
-		s.Store.AppendAgent(p.SpaceID, resolveContent(p.Content, attachmentPath), "", attachmentPath)
+		// Return the same id the store uses internally, so the adapter sees
+		// stable ids and subsequent `replyToMessage` calls from the agent can
+		// land on findEntryQuote matches in the renderer.
+		agentID := s.Store.AppendAgent(p.SpaceID, resolveContent(p.Content, attachmentPath), "", attachmentPath)
 		s.notifyStoreChanged()
-		return protocol.SendResult{ID: newID(), Timestamp: iso()}, nil
+		return protocol.SendResult{ID: agentID, Timestamp: iso()}, nil
 
 	case "replyToMessage":
 		var p protocol.ReplyParams
@@ -69,9 +72,9 @@ func (s *Server) HandleRequest(method string, raw json.RawMessage) (any, error) 
 		}
 		attachmentPath := resolveAttachmentPath(p.Content)
 		s.Store.EnsureChat(p.SpaceID)
-		s.Store.AppendAgent(p.SpaceID, resolveContent(p.Content, attachmentPath), p.MessageID, attachmentPath)
+		agentID := s.Store.AppendAgent(p.SpaceID, resolveContent(p.Content, attachmentPath), p.MessageID, attachmentPath)
 		s.notifyStoreChanged()
-		return protocol.SendResult{ID: newID(), Timestamp: iso()}, nil
+		return protocol.SendResult{ID: agentID, Timestamp: iso()}, nil
 
 	case "startTyping":
 		var p protocol.TypingParams
@@ -137,21 +140,43 @@ func (s *Server) HandleNotification(method string, raw json.RawMessage) {
 	}
 }
 
-// PumpUserInput blocks reading from the store's input queue and emits a
-// `message` notification for each user-submitted input. Runs in a goroutine.
+// PumpUserInput blocks reading from the store's event queue and emits a
+// `message` or `reaction` notification for each user-side event. Runs in a
+// goroutine.
 func (s *Server) PumpUserInput() {
 	for {
-		chatID, content, ok := s.Store.NextUserInput()
+		evt, ok := s.Store.NextUserEvent()
 		if !ok {
 			return
 		}
-		_ = s.Session.Notify("message", protocol.MessageNotification{
-			ID:        newID(),
-			SpaceID:   chatID,
-			SenderID:  "terminal-user",
-			Content:   outgoingContent(content),
-			Timestamp: iso(),
-		})
+		switch evt.Kind {
+		case store.EventMessage:
+			id := evt.OwnID
+			if id == "" {
+				// Fallback for callers that didn't supply one — keeps the
+				// adapter happy even if the id won't round-trip for replies.
+				id = newID()
+			}
+			msg := protocol.MessageNotification{
+				ID:        id,
+				SpaceID:   evt.ChatID,
+				SenderID:  "terminal-user",
+				Content:   outgoingContent(evt.Content),
+				Timestamp: iso(),
+			}
+			if evt.ReplyTo != "" {
+				msg.ReplyTo = &protocol.MessageRef{MessageID: evt.ReplyTo}
+			}
+			_ = s.Session.Notify("message", msg)
+		case store.EventReaction:
+			_ = s.Session.Notify("reaction", protocol.ReactionNotification{
+				SpaceID:   evt.ChatID,
+				MessageID: evt.MessageID,
+				Reaction:  evt.Reaction,
+				SenderID:  "terminal-user",
+				Timestamp: iso(),
+			})
+		}
 	}
 }
 

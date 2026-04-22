@@ -30,7 +30,14 @@ import (
 const (
 	ZoneSidebarRowPrefix = "sidebar-row:"
 	ZoneAttachmentPrefix = "attachment:" // per-log-entry image chip
+	ZoneMessagePrefix    = "msg:"        // click a message to select it
+	ZoneReplyButton      = "action-reply"
+	ZoneReactButton      = "action-react"
+	ZoneReactionPrefix   = "reaction:" // each quick-pick emoji in the picker
 )
+
+// reactionPicks is the fixed set of quick-pick reactions shown in the picker.
+var reactionPicks = []string{"👍", "❤️", "😂", "😮", "😢", "🎉"}
 
 // StoreChangedMsg is sent whenever the RPC server mutates the store and the UI
 // needs to re-render. The server's pump goroutine sends these via Program.Send.
@@ -44,8 +51,13 @@ var helpLines = []string{
 	"  Ctrl+L         clear active chat",
 	"  Ctrl+C         exit",
 	"  Tab            complete slash command",
-	"  Esc            cancel input + drop pending attachments",
+	"  Esc            cancel input / exit select / drop attachments",
+	"  ↑ / ↓          (empty input) select a message to reply/react",
+	"  r              reply to selected message",
+	"  e              react to selected message (emoji picker)",
+	"  1-6 / ←→ Enter emoji picker: pick / move / confirm",
 	"  drag file      attach (or paste its path)",
+	"  click message  select (then ↩ reply or 🙂 react)",
 	"  click image    toggle floating preview (Kitty/Ghostty)",
 	"slash commands",
 	"  /new           start a new chat",
@@ -66,6 +78,15 @@ type Model struct {
 	prefix    string
 	tabIndex  int
 	ready     bool
+
+	// Message-select / action state — per active chat. The UI enters select
+	// mode on ↑/↓ or message click, lets the user target one entry, then
+	// either ↩ replies, 🙂 reacts, or Esc cancels.
+	selecting   bool
+	selectedID  string
+	replyingTo  string // non-empty → next submit is a quoted reply
+	reactingTo  string // non-empty → emoji picker open for this entry
+	reactionIdx int
 }
 
 // NewModel builds an initialized Model. Caller is expected to wire a RPC server
@@ -123,22 +144,32 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handlePaste(string(msg.Runes))
 	}
 
+	key := msg.String()
+
+	// Reaction picker has priority — it intercepts digits/arrows/enter/esc.
+	if m.reactingTo != "" {
+		return m.handleReactionKey(key)
+	}
+
 	// Always-available shortcuts
-	switch msg.String() {
+	switch key {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "ctrl+n":
+		m.clearModalState()
 		id := m.Store.NewChat()
 		_ = id
 		m.syncInputFromDraft()
 		m.refreshViewport()
 		return m, nil
 	case "ctrl+j":
+		m.clearModalState()
 		m.Store.CycleActiveChat(1)
 		m.syncInputFromDraft()
 		m.refreshViewport()
 		return m, nil
 	case "ctrl+k":
+		m.clearModalState()
 		m.Store.CycleActiveChat(-1)
 		m.syncInputFromDraft()
 		m.refreshViewport()
@@ -152,7 +183,38 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		m.cycleSlashCompletion()
 		return m, nil
+	case "up":
+		if m.canSelectMessages() {
+			m.moveSelection(-1)
+			return m, nil
+		}
+	case "down":
+		if m.canSelectMessages() {
+			m.moveSelection(1)
+			return m, nil
+		}
+	case "r":
+		if m.selecting && m.selectedID != "" {
+			m.replyingTo = m.selectedID
+			m.exitSelectMode()
+			m.refreshViewport()
+			return m, nil
+		}
+	case "e":
+		if m.selecting && m.selectedID != "" {
+			m.reactingTo = m.selectedID
+			m.reactionIdx = 0
+			m.selecting = false
+			m.refreshViewport()
+			return m, nil
+		}
 	case "esc":
+		if m.selecting || m.replyingTo != "" {
+			m.exitSelectMode()
+			m.replyingTo = ""
+			m.refreshViewport()
+			return m, nil
+		}
 		if id := m.Store.ActiveChatID(); id != "" {
 			m.Store.ClearPendingAttachments(id)
 			m.Store.SetInputDraft(id, "")
@@ -165,10 +227,129 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleSubmit()
 	}
 
+	// Selection is strictly a read-only mode; typing any other key exits it
+	// back to normal editing rather than silently swallowing keystrokes.
+	if m.selecting {
+		m.exitSelectMode()
+		m.refreshViewport()
+	}
+
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	m.onInputChange()
 	return m, cmd
+}
+
+func (m *Model) handleReactionKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc":
+		m.reactingTo = ""
+		m.reactionIdx = 0
+		m.refreshViewport()
+		return m, nil
+	case "left":
+		if m.reactionIdx > 0 {
+			m.reactionIdx--
+		}
+		return m, nil
+	case "right":
+		if m.reactionIdx < len(reactionPicks)-1 {
+			m.reactionIdx++
+		}
+		return m, nil
+	case "enter":
+		m.submitReaction(reactionPicks[m.reactionIdx])
+		return m, nil
+	}
+	if len(key) == 1 && key >= "1" && key <= "6" {
+		idx := int(key[0] - '1')
+		if idx < len(reactionPicks) {
+			m.submitReaction(reactionPicks[idx])
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) submitReaction(emoji string) {
+	chatID := m.Store.ActiveChatID()
+	targetID := m.reactingTo
+	m.reactingTo = ""
+	m.reactionIdx = 0
+	if chatID == "" || targetID == "" {
+		m.refreshViewport()
+		return
+	}
+	m.Store.React(chatID, targetID, emoji)
+	m.Store.PushUserReaction(chatID, targetID, emoji)
+	m.refreshViewport()
+}
+
+func (m *Model) canSelectMessages() bool {
+	chat, ok := m.Store.ActiveChat()
+	if !ok {
+		return false
+	}
+	if chat.ID == store.SystemChatID || len(chat.Entries) == 0 {
+		return false
+	}
+	// When the user is typing, arrow keys should stay with the textinput for
+	// cursor movement. Only hijack them when the input is empty.
+	if !m.selecting && m.input.Value() != "" {
+		return false
+	}
+	return true
+}
+
+// moveSelection activates select mode on first press, then walks through
+// message IDs in the active chat. Direction: -1 up (older), +1 down (newer).
+func (m *Model) moveSelection(delta int) {
+	chat, ok := m.Store.ActiveChat()
+	if !ok || len(chat.Entries) == 0 {
+		return
+	}
+	if !m.selecting {
+		m.selecting = true
+		// First press selects the most recent message regardless of direction.
+		m.selectedID = chat.Entries[len(chat.Entries)-1].ID
+		m.refreshViewport()
+		return
+	}
+	idx := -1
+	for i, e := range chat.Entries {
+		if e.ID == m.selectedID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		m.selectedID = chat.Entries[len(chat.Entries)-1].ID
+		m.refreshViewport()
+		return
+	}
+	next := idx + delta
+	if next < 0 {
+		next = 0
+	}
+	if next > len(chat.Entries)-1 {
+		next = len(chat.Entries) - 1
+	}
+	m.selectedID = chat.Entries[next].ID
+	m.refreshViewport()
+}
+
+func (m *Model) exitSelectMode() {
+	m.selecting = false
+	m.selectedID = ""
+}
+
+// clearModalState drops any cross-message modes (select, reply, react). Used
+// when switching chats — the targets only make sense in their original chat.
+func (m *Model) clearModalState() {
+	m.selecting = false
+	m.selectedID = ""
+	m.replyingTo = ""
+	m.reactingTo = ""
+	m.reactionIdx = 0
 }
 
 func (m *Model) handlePaste(raw string) (tea.Model, tea.Cmd) {
@@ -214,12 +395,41 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		for _, chat := range m.Store.SortedChats() {
 			zoneID := ZoneSidebarRowPrefix + chat.ID
 			if zone.Get(zoneID).InBounds(msg) {
+				m.clearModalState()
 				m.Store.SetActiveChat(chat.ID)
 				m.syncInputFromDraft()
 				m.refreshViewport()
 				return m, nil
 			}
 		}
+
+		// Reaction picker cells (only meaningful while reacting).
+		if m.reactingTo != "" {
+			for _, emoji := range reactionPicks {
+				if zone.Get(ZoneReactionPrefix + emoji).InBounds(msg) {
+					m.submitReaction(emoji)
+					return m, nil
+				}
+			}
+		}
+
+		// Action row buttons on the currently-selected message.
+		if m.selecting && m.selectedID != "" {
+			if zone.Get(ZoneReplyButton).InBounds(msg) {
+				m.replyingTo = m.selectedID
+				m.exitSelectMode()
+				m.refreshViewport()
+				return m, nil
+			}
+			if zone.Get(ZoneReactButton).InBounds(msg) {
+				m.reactingTo = m.selectedID
+				m.reactionIdx = 0
+				m.selecting = false
+				m.refreshViewport()
+				return m, nil
+			}
+		}
+
 		// Attachment chip clicks → toggle preview.
 		if active, ok := m.Store.ActiveChat(); ok {
 			for i := range active.Entries {
@@ -240,6 +450,25 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 						Path:     e.AttachmentPath,
 					})
 				}
+				return m, nil
+			}
+		}
+
+		// Message body clicks → select that message (or toggle off if it was
+		// already the selection). System chat is read-only — no selection.
+		if active, ok := m.Store.ActiveChat(); ok && active.ID != store.SystemChatID {
+			for i := range active.Entries {
+				e := active.Entries[i]
+				if !zone.Get(ZoneMessagePrefix + e.ID).InBounds(msg) {
+					continue
+				}
+				if m.selecting && m.selectedID == e.ID {
+					m.exitSelectMode()
+				} else {
+					m.selecting = true
+					m.selectedID = e.ID
+				}
+				m.refreshViewport()
 				return m, nil
 			}
 		}
@@ -281,6 +510,9 @@ func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	replyTo := m.replyingTo
+	m.replyingTo = ""
+
 	for _, a := range pending {
 		content := protocol.Content{
 			Type:     "attachment",
@@ -292,13 +524,27 @@ func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 			size := a.Size
 			content.Size = &size
 		}
-		m.Store.AppendUser(id, content, a.Path)
-		m.Store.PushUserInput(id, content)
+		var msgID string
+		if replyTo != "" {
+			msgID = m.Store.AppendUserReply(id, content, replyTo, a.Path)
+			m.Store.PushUserReply(id, msgID, content, replyTo)
+			replyTo = "" // only first outgoing carries the reply quote
+		} else {
+			msgID = m.Store.AppendUser(id, content, a.Path)
+			m.Store.PushUserInput(id, msgID, content)
+		}
 	}
 	if raw != "" {
 		content := protocol.Content{Type: "text", Text: raw}
-		m.Store.AppendUser(id, content, "")
-		m.Store.PushUserInput(id, content)
+		var msgID string
+		if replyTo != "" {
+			msgID = m.Store.AppendUserReply(id, content, replyTo, "")
+			m.Store.PushUserReply(id, msgID, content, replyTo)
+		} else {
+			msgID = m.Store.AppendUser(id, content, "")
+			m.Store.PushUserInput(id, msgID, content)
+		}
+		_ = msgID
 	}
 
 	m.Store.SetInputDraft(id, "")
@@ -365,7 +611,7 @@ func (m *Model) refreshViewport() {
 		return
 	}
 	inner := m.logInnerWidth()
-	content := zoneMarkEntries(m.theme, chat, inner)
+	content := m.zoneMarkEntries(m.theme, chat, inner)
 	// Bottom-align: if content fits in the viewport, prepend blank lines so
 	// the newest message sits at the bottom next to the input, with empty
 	// space above rather than below.
@@ -513,6 +759,15 @@ func (m *Model) renderInputContainer(chat store.ChatState, hasActive bool) strin
 
 	var rows []string
 
+	if hasActive && m.replyingTo != "" {
+		if banner := m.renderReplyBanner(chat, innerWidth); banner != "" {
+			rows = append(rows, banner)
+		}
+	}
+	if hasActive && m.reactingTo != "" {
+		rows = append(rows, m.renderReactionPicker(innerWidth))
+	}
+
 	if hasActive && len(chat.PendingAttachments) > 0 {
 		chips := RenderAttachmentChips(m.theme, chat.PendingAttachments, innerWidth)
 		rows = append(rows, chips)
@@ -536,6 +791,60 @@ func (m *Model) renderInputContainer(chat store.ChatState, hasActive bool) strin
 		Padding(0, 1).
 		Width(m.width - SidebarWidth - 2).
 		Render(inner)
+}
+
+func (m *Model) renderReplyBanner(chat store.ChatState, width int) string {
+	quote := ""
+	for _, e := range chat.Entries {
+		if e.ID != m.replyingTo {
+			continue
+		}
+		switch e.Content.Type {
+		case "text":
+			quote = truncateRunes(e.Content.Text, 60)
+		case "attachment":
+			quote = "[attachment: " + e.Content.Name + "]"
+		case "voice":
+			quote = "[voice]"
+		case "contact":
+			quote = "[contact]"
+		case "custom":
+			quote = "[custom]"
+		}
+		break
+	}
+	if quote == "" {
+		// Target message was dropped off scrollback or is otherwise missing.
+		m.replyingTo = ""
+		return ""
+	}
+	arrow := lipgloss.NewStyle().Foreground(m.theme.PromptColor).Render("↩ ")
+	label := lipgloss.NewStyle().Foreground(m.theme.SystemColor).Render("replying to: ")
+	body := lipgloss.NewStyle().Foreground(m.theme.InputColor).Render("\"" + quote + "\"")
+	hint := lipgloss.NewStyle().Foreground(m.theme.SystemColor).Render("  (Esc to cancel)")
+	line := arrow + label + body + hint
+	return lipgloss.NewStyle().MaxWidth(width).Render(line)
+}
+
+func (m *Model) renderReactionPicker(width int) string {
+	var parts []string
+	for i, emoji := range reactionPicks {
+		label := fmt.Sprintf(" %d %s ", i+1, emoji)
+		var st lipgloss.Style
+		if i == m.reactionIdx {
+			st = lipgloss.NewStyle().
+				Background(m.theme.SuggestionSelectedBG).
+				Foreground(m.theme.InputColor).
+				Bold(true)
+		} else {
+			st = lipgloss.NewStyle().Foreground(m.theme.InputColor)
+		}
+		cell := zone.Mark(ZoneReactionPrefix+emoji, st.Render(label))
+		parts = append(parts, cell)
+	}
+	strip := strings.Join(parts, " ")
+	hint := lipgloss.NewStyle().Foreground(m.theme.SystemColor).Render("  Enter pick · Esc cancel")
+	return lipgloss.NewStyle().MaxWidth(width).Render(strip + hint)
 }
 
 func (m *Model) renderPreviewPanel(preview *store.HoveredPreview) string {
@@ -663,21 +972,44 @@ func zoneMarkSidebar(theme Theme, chats []store.ChatState, activeID string, heig
 		Render(column)
 }
 
-func zoneMarkEntries(theme Theme, chat store.ChatState, width int) string {
-	lines := make([]string, 0, len(chat.Entries)+2)
+func (m *Model) zoneMarkEntries(theme Theme, chat store.ChatState, width int) string {
+	lines := make([]string, 0, len(chat.Entries)+4)
 	if chat.DroppedCount > 0 {
 		msg := fmt.Sprintf("… %d older messages dropped", chat.DroppedCount)
 		lines = append(lines, lipgloss.NewStyle().Foreground(theme.SystemColor).Render(msg))
 	}
 	for i := range chat.Entries {
-		rendered := renderEntry(theme, chat.Entries[i], chat.Entries, width)
-		if chat.Entries[i].Content.Type == "attachment" &&
-			kitty.SupportedMimeType(chat.Entries[i].Content.MimeType) {
-			rendered = zone.Mark(ZoneAttachmentPrefix+chat.Entries[i].ID, rendered)
+		e := chat.Entries[i]
+		rendered := renderEntry(theme, e, chat.Entries, width)
+		if e.ID == m.selectedID && m.selecting {
+			rendered = lipgloss.NewStyle().
+				Background(theme.SuggestionBG).
+				Render(rendered)
 		}
+		if e.Content.Type == "attachment" && kitty.SupportedMimeType(e.Content.MimeType) {
+			rendered = zone.Mark(ZoneAttachmentPrefix+e.ID, rendered)
+		}
+		// Wrap every entry with a click-zone so mouse users can select it.
+		rendered = zone.Mark(ZoneMessagePrefix+e.ID, rendered)
 		lines = append(lines, rendered)
+		if e.ID == m.selectedID && m.selecting {
+			lines = append(lines, renderActionRow(theme))
+		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func renderActionRow(theme Theme) string {
+	btn := func(label string, zoneID string) string {
+		st := lipgloss.NewStyle().
+			Foreground(theme.PromptColor).
+			Background(theme.SuggestionBG).
+			Padding(0, 1)
+		return zone.Mark(zoneID, st.Render(label))
+	}
+	row := btn("↩ reply (r)", ZoneReplyButton) + "  " + btn("🙂 react (e)", ZoneReactButton)
+	hint := lipgloss.NewStyle().Foreground(theme.SystemColor).Render("   ↑/↓ move · Esc cancel")
+	return lipgloss.NewStyle().PaddingLeft(2).Render(row + hint)
 }
 
 // overlayAt lets us paint `overlay` onto `base` at (x, y). Lipgloss doesn't

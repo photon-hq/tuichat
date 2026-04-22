@@ -84,8 +84,9 @@ func renderEntry(theme Theme, e store.LogEntry, allEntries []store.LogEntry, wid
 	}
 
 	if len(e.Reactions) > 0 {
+		bStyle := lipgloss.NewStyle().Foreground(theme.BorderColor)
 		reactStyle := lipgloss.NewStyle().Foreground(theme.SystemColor)
-		main += "\n" + lipgloss.NewStyle().Foreground(theme.BorderColor).Render("       ") + reactStyle.Render(strings.Join(e.Reactions, " "))
+		main += "\n" + bStyle.Render("  └─ ") + reactStyle.Render(strings.Join(e.Reactions, " "))
 	}
 
 	_ = width // not used for hard-wrapping yet; terminal handles soft wrap

@@ -74,14 +74,29 @@ type Store struct {
 	commands       []CommandDef
 	hovered        *HoveredPreview
 	nextChatIndex  int
-	inputQueue     []userInput
-	inputClosed    bool
-	inputWaiters   []chan userInput
+	eventQueue     []UserEvent
+	eventClosed    bool
+	eventWaiters   []chan UserEvent
 }
 
-type userInput struct {
-	ChatID  string
-	Content protocol.Content
+// UserEventKind discriminates what the pump goroutine will forward to the
+// adapter — a user-authored message, or a reaction on an existing message.
+type UserEventKind int
+
+const (
+	EventMessage UserEventKind = iota
+	EventReaction
+)
+
+// UserEvent is a single outbound event drained by the server's pump.
+type UserEvent struct {
+	Kind      UserEventKind
+	ChatID    string
+	OwnID     string           // EventMessage: id the adapter will see on this message
+	Content   protocol.Content // EventMessage
+	ReplyTo   string           // EventMessage (empty = not a reply)
+	MessageID string           // EventReaction: the target message id
+	Reaction  string           // EventReaction
 }
 
 func New(commands []CommandDef) *Store {
@@ -221,6 +236,15 @@ func (s *Store) AppendUser(chatID string, content protocol.Content, attachmentPa
 	return s.appendLocked(chatID, RoleUser, content, "", attachmentPath)
 }
 
+// AppendUserReply is like AppendUser but records that the entry quotes an
+// earlier message, so the UI renders a quote stub above it.
+func (s *Store) AppendUserReply(chatID string, content protocol.Content, replyTo, attachmentPath string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureChatLocked(chatID)
+	return s.appendLocked(chatID, RoleUser, content, replyTo, attachmentPath)
+}
+
 func (s *Store) AppendSystem(chatID, text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -311,61 +335,75 @@ func (s *Store) HoveredPreview() *HoveredPreview {
 	return s.hovered
 }
 
-// PushUserInput queues a user-originated message to be emitted as a protocol
-// `message` notification. Safe to call from any goroutine.
-func (s *Store) PushUserInput(chatID string, content protocol.Content) {
+// PushUserInput queues a user-originated message. Safe to call from any goroutine.
+// ownID should match the store entry's ID so agents that call `message.reply(...)`
+// target the same id the renderer uses for quote lookup.
+func (s *Store) PushUserInput(chatID, ownID string, content protocol.Content) {
+	s.pushEvent(UserEvent{Kind: EventMessage, ChatID: chatID, OwnID: ownID, Content: content})
+}
+
+// PushUserReply queues a user-originated message that quotes an earlier one.
+func (s *Store) PushUserReply(chatID, ownID string, content protocol.Content, replyTo string) {
+	s.pushEvent(UserEvent{Kind: EventMessage, ChatID: chatID, OwnID: ownID, Content: content, ReplyTo: replyTo})
+}
+
+// PushUserReaction queues an emoji reaction against a previously-seen message.
+func (s *Store) PushUserReaction(chatID, messageID, reaction string) {
+	s.pushEvent(UserEvent{Kind: EventReaction, ChatID: chatID, MessageID: messageID, Reaction: reaction})
+}
+
+func (s *Store) pushEvent(evt UserEvent) {
 	s.mu.Lock()
-	if s.inputClosed {
+	if s.eventClosed {
 		s.mu.Unlock()
 		return
 	}
-	item := userInput{ChatID: chatID, Content: content}
-	if len(s.inputWaiters) > 0 {
-		ch := s.inputWaiters[0]
-		s.inputWaiters = s.inputWaiters[1:]
+	if len(s.eventWaiters) > 0 {
+		ch := s.eventWaiters[0]
+		s.eventWaiters = s.eventWaiters[1:]
 		s.mu.Unlock()
-		ch <- item
+		ch <- evt
 		return
 	}
-	s.inputQueue = append(s.inputQueue, item)
+	s.eventQueue = append(s.eventQueue, evt)
 	s.mu.Unlock()
 }
 
-// NextUserInput blocks until a user input is available. Returns (_, false) when closed.
-func (s *Store) NextUserInput() (string, protocol.Content, bool) {
+// NextUserEvent blocks until an event is available. Returns (_, false) when closed.
+func (s *Store) NextUserEvent() (UserEvent, bool) {
 	s.mu.Lock()
-	if s.inputClosed {
+	if s.eventClosed {
 		s.mu.Unlock()
-		return "", protocol.Content{}, false
+		return UserEvent{}, false
 	}
-	if len(s.inputQueue) > 0 {
-		item := s.inputQueue[0]
-		s.inputQueue = s.inputQueue[1:]
+	if len(s.eventQueue) > 0 {
+		evt := s.eventQueue[0]
+		s.eventQueue = s.eventQueue[1:]
 		s.mu.Unlock()
-		return item.ChatID, item.Content, true
+		return evt, true
 	}
-	ch := make(chan userInput, 1)
-	s.inputWaiters = append(s.inputWaiters, ch)
+	ch := make(chan UserEvent, 1)
+	s.eventWaiters = append(s.eventWaiters, ch)
 	s.mu.Unlock()
 
-	item, ok := <-ch
+	evt, ok := <-ch
 	if !ok {
-		return "", protocol.Content{}, false
+		return UserEvent{}, false
 	}
-	return item.ChatID, item.Content, true
+	return evt, true
 }
 
 func (s *Store) CloseInput() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.inputClosed {
+	if s.eventClosed {
 		return
 	}
-	s.inputClosed = true
-	for _, ch := range s.inputWaiters {
+	s.eventClosed = true
+	for _, ch := range s.eventWaiters {
 		close(ch)
 	}
-	s.inputWaiters = nil
+	s.eventWaiters = nil
 }
 
 // --- helpers ---

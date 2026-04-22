@@ -140,13 +140,26 @@ params: { level: "log" | "info" | "warn" | "error" | "debug"; text: string }
 ## Notifications (server → client)
 
 ### `message`
-Notification. Fires whenever the user submits in any chat.
+Notification. Fires whenever the user submits in any chat. If the user targeted a previously-seen message via the TUI's reply flow, `replyTo.messageId` carries that target.
 ```ts
 params: {
   id: string;
   spaceId: string;
   senderId: string;      // always "terminal-user"
   content: Content;
+  timestamp: string;
+  replyTo?: { messageId: string };
+}
+```
+
+### `reaction`
+Notification. Fires when the user attaches an emoji reaction to any previously-seen message in the TUI. Target-message is identified by `(spaceId, messageId)` — the same ids the adapter handed out earlier via `send`/`replyToMessage` results or that the binary generated for user messages in prior `message` notifications.
+```ts
+params: {
+  spaceId: string;
+  messageId: string;
+  reaction: string;
+  senderId: string;      // always "terminal-user"
   timestamp: string;
 }
 ```

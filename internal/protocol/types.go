@@ -78,11 +78,29 @@ type SendResult struct {
 }
 
 type MessageNotification struct {
-	ID        string  `json:"id"`
-	SpaceID   string  `json:"spaceId"`
-	SenderID  string  `json:"senderId"`
-	Content   Content `json:"content"`
-	Timestamp string  `json:"timestamp"`
+	ID        string      `json:"id"`
+	SpaceID   string      `json:"spaceId"`
+	SenderID  string      `json:"senderId"`
+	Content   Content     `json:"content"`
+	Timestamp string      `json:"timestamp"`
+	ReplyTo   *MessageRef `json:"replyTo,omitempty"`
+}
+
+// MessageRef points at a previously-seen message. Used when a user submits a
+// reply in the TUI — we echo the target messageId back to the adapter so the
+// agent knows which of its messages is being replied to.
+type MessageRef struct {
+	MessageID string `json:"messageId"`
+}
+
+// ReactionNotification fires when the user reacts to a message in the TUI.
+// Server → client (binary → adapter).
+type ReactionNotification struct {
+	SpaceID   string `json:"spaceId"`
+	MessageID string `json:"messageId"`
+	Reaction  string `json:"reaction"`
+	SenderID  string `json:"senderId"`
+	Timestamp string `json:"timestamp"`
 }
 
 // LogNotification carries agent-side console output into the UI. Client → server.
