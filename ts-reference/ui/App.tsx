@@ -370,17 +370,16 @@ export function App({ store }: AppProps) {
             height: 1,
             paddingLeft: 1,
             paddingRight: 1,
+            shouldFill: false,
           }}
         >
-          <text>
-            {typing ? (
+          {typing ? (
+            <text>
               <span style={{ fg: theme.colors.typing }}>
                 {"● agent is typing…"}
               </span>
-            ) : (
-              <span style={{ fg: theme.colors.system }}>{" "}</span>
-            )}
-          </text>
+            </text>
+          ) : null}
         </box>
 
         <box
