@@ -33,6 +33,14 @@ import (
 // copyAlertDuration is how long the copy confirmation bubble sits on screen.
 const copyAlertDuration = 3 * time.Second
 
+// dragPane identifies which scrollable region owns an active drag-selection.
+type dragPane int
+
+const (
+	paneChat dragPane = iota
+	paneSystemLog
+)
+
 // Zone IDs used with bubblezone for click/hover routing.
 const (
 	ZoneSidebarRowPrefix = "sidebar-row:"
@@ -107,19 +115,24 @@ type Model struct {
 	logVisible   bool
 	expandedLogs map[string]bool // log entry IDs currently shown fully-wrapped
 
-	// Drag-select state. Row indices into plainLogLines (viewport YOffset
-	// pre-applied); col indices are display-cell columns into each row.
+	// Drag-select state. Rows are indices into whichever pane's plain-lines
+	// buffer the drag lives in; cols are display-cell columns into that row.
 	//   dragActive     — a selection is visible and highlighted
 	//   dragInProgress — mouse button currently held; motion updates end
 	//   dragMoved      — any motion fired between press and release
-	dragActive     bool
-	dragInProgress bool
-	dragMoved      bool
-	dragStartRow   int
-	dragStartCol   int
-	dragEndRow     int
-	dragEndCol     int
-	plainLogLines  []string // ANSI-stripped mirror of viewport content
+	//   dragPane       — which pane the drag lives in
+	dragActive          bool
+	dragInProgress      bool
+	dragMoved           bool
+	dragPane            dragPane
+	dragStartRow        int
+	dragStartCol        int
+	dragEndRow          int
+	dragEndCol          int
+	dragPressX          int // screen coords of the originating press — used
+	dragPressY          int // to dispatch a click-not-drag on release.
+	plainLogLines       []string // ANSI-stripped chat viewport content
+	plainSystemLogLines []string // ANSI-stripped log column content (body only)
 
 	// Copy-confirmation bubble (library-driven).
 	alert bubbleup.AlertModel
@@ -474,6 +487,67 @@ func (m *Model) screenColToContentCol(x int) int {
 	return col
 }
 
+// Log-column geometry. renderLogColumn paints:
+//
+//	[border 1 cell] [pad 1] [ header ] [pad 1]   ← screen row 0
+//	[border]        [pad 1] [ ─rule─ ] [pad 1]   ← screen row 1
+//	[border]        [pad 1] [ body-0 ] [pad 1]   ← screen row 2
+//	[border]        [pad 1] [ body-N ] [pad 1]
+//
+// Body rows are the only area we let users drag-select; header and rule are
+// static UI decoration.
+const (
+	sysLogFirstBodyScreenRow = 2 // screen Y of the first selectable body row
+	sysLogPadCells           = 1 // left/right padding inside the panel
+	sysLogBorderCells        = 1 // left-side border
+)
+
+// inSystemLogRect returns true if (x,y) sits over a body row in the log
+// column's content area. False for the header, the rule, the border, and
+// the outside padding cells.
+func (m *Model) inSystemLogRect(x, y int) bool {
+	if !m.logVisible {
+		return false
+	}
+	// log column starts at screen col (m.width - LogColumnWidth - 1): border,
+	// then pad, then content, then pad.
+	colStart := m.width - LogColumnWidth + sysLogBorderCells + sysLogPadCells - 1
+	colEnd := m.width - sysLogPadCells - 1
+	if x < colStart || x > colEnd {
+		return false
+	}
+	if y < sysLogFirstBodyScreenRow {
+		return false
+	}
+	if len(m.plainSystemLogLines) == 0 {
+		return false
+	}
+	if y >= sysLogFirstBodyScreenRow+len(m.plainSystemLogLines) {
+		return false
+	}
+	return true
+}
+
+func (m *Model) screenRowToSystemLogRow(y int) int {
+	row := y - sysLogFirstBodyScreenRow
+	if row < 0 {
+		row = 0
+	}
+	if n := len(m.plainSystemLogLines); n > 0 && row > n-1 {
+		row = n - 1
+	}
+	return row
+}
+
+func (m *Model) screenColToSystemLogCol(x int) int {
+	colStart := m.width - LogColumnWidth + sysLogBorderCells + sysLogPadCells - 1
+	col := x - colStart
+	if col < 0 {
+		col = 0
+	}
+	return col
+}
+
 // selectionRange normalizes the drag endpoints so (loRow,loCol) is always
 // before (hiRow,hiCol) in reading order.
 func (m *Model) selectionRange() (loRow, loCol, hiRow, hiCol int) {
@@ -510,8 +584,15 @@ func plainSliceByCols(s string, from, to int) string {
 }
 
 func (m *Model) handleDragMotion(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	row := m.screenRowToContentRow(msg.Y)
-	col := m.screenColToContentCol(msg.X)
+	var row, col int
+	switch m.dragPane {
+	case paneSystemLog:
+		row = m.screenRowToSystemLogRow(msg.Y)
+		col = m.screenColToSystemLogCol(msg.X)
+	default:
+		row = m.screenRowToContentRow(msg.Y)
+		col = m.screenColToContentCol(msg.X)
+	}
 	if row == m.dragEndRow && col == m.dragEndCol && m.dragMoved {
 		return m, nil
 	}
@@ -528,24 +609,42 @@ func (m *Model) handleDragMotion(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 func (m *Model) handleDragRelease(_ tea.MouseMsg) (tea.Model, tea.Cmd) {
 	m.dragInProgress = false
 	if !m.dragMoved {
+		// Click, not a drag — replay the originating press through the
+		// zone-match cascade so click-to-expand, click-to-select-message,
+		// etc. keep working.
+		pressX, pressY := m.dragPressX, m.dragPressY
 		m.clearDragSelection()
-		return m, nil
+		synthetic := tea.MouseMsg{
+			X:      pressX,
+			Y:      pressY,
+			Button: tea.MouseButtonLeft,
+			Action: tea.MouseActionPress,
+		}
+		return m.dispatchClick(synthetic)
+	}
+
+	// Pick the right source of plain lines for this pane.
+	var source []string
+	switch m.dragPane {
+	case paneSystemLog:
+		source = m.plainSystemLogLines
+	default:
+		source = m.plainLogLines
 	}
 
 	loRow, loCol, hiRow, hiCol := m.selectionRange()
 	if loRow < 0 {
 		loRow = 0
 	}
-	if hiRow >= len(m.plainLogLines) {
-		hiRow = len(m.plainLogLines) - 1
+	if hiRow >= len(source) {
+		hiRow = len(source) - 1
 	}
 
-	// Build the plain-text payload. For each row, slice plainLogLines[row]
-	// by display columns, and strip trailing whitespace (the viewport
-	// bottom-aligns content with padded-right rows).
+	// Build the plain-text payload. For each row, slice by display columns,
+	// and strip trailing whitespace so we don't paste bottom-aligned padding.
 	parts := make([]string, 0, hiRow-loRow+1)
 	for r := loRow; r <= hiRow; r++ {
-		line := m.plainLogLines[r]
+		line := source[r]
 		lineW := runewidth.StringWidth(line)
 		from, to := 0, lineW
 		if r == loRow {
@@ -640,10 +739,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Press inside the message-log rect starts a drag. Any prior persisted
-		// selection is cleared (and the viewport re-rendered so the highlight
-		// disappears immediately). The press may still turn out to be a click
-		// if no motion fires before release.
+		// Press inside the chat-column viewport starts a chat-pane drag.
 		if m.inMessageLogRect(msg.X, msg.Y) {
 			if m.dragActive {
 				m.clearDragSelection()
@@ -651,8 +747,31 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 			m.dragInProgress = true
 			m.dragMoved = false
+			m.dragPane = paneChat
+			m.dragPressX = msg.X
+			m.dragPressY = msg.Y
 			row := m.screenRowToContentRow(msg.Y)
 			col := m.screenColToContentCol(msg.X)
+			m.dragStartRow = row
+			m.dragStartCol = col
+			m.dragEndRow = row
+			m.dragEndCol = col
+			return m, nil
+		}
+
+		// Press inside the log-column body starts a system-log drag.
+		if m.inSystemLogRect(msg.X, msg.Y) {
+			if m.dragActive {
+				m.clearDragSelection()
+				m.refreshViewport()
+			}
+			m.dragInProgress = true
+			m.dragMoved = false
+			m.dragPane = paneSystemLog
+			m.dragPressX = msg.X
+			m.dragPressY = msg.Y
+			row := m.screenRowToSystemLogRow(msg.Y)
+			col := m.screenColToSystemLogCol(msg.X)
 			m.dragStartRow = row
 			m.dragStartCol = col
 			m.dragEndRow = row
@@ -667,109 +786,119 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 		}
 
-		// Toggle log panel.
-		if zone.Get(ZoneLogToggle).InBounds(msg) {
-			m.logVisible = !m.logVisible
-			m.layoutInner()
-			return m, nil
-		}
+		return m.dispatchClick(msg)
+	}
+	return m, nil
+}
 
-		// Toggle expand/collapse of a specific log entry.
-		if m.logVisible {
-			for _, e := range m.Store.SystemEntries() {
-				if zone.Get(ZoneLogEntryPrefix + e.ID).InBounds(msg) {
-					if m.expandedLogs[e.ID] {
-						delete(m.expandedLogs, e.ID)
-					} else {
-						m.expandedLogs[e.ID] = true
-					}
-					return m, nil
-				}
-			}
-		}
+// dispatchClick runs the zone-match cascade against the given press MouseMsg.
+// Factored out so that a release-without-motion (pure click inside a drag-
+// select rect) can still fire the usual click behaviors — log-entry expand,
+// message select, sidebar switch, etc.
+func (m *Model) dispatchClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// Toggle log panel.
+	if zone.Get(ZoneLogToggle).InBounds(msg) {
+		m.logVisible = !m.logVisible
+		m.layoutInner()
+		return m, nil
+	}
 
-		// Sidebar clicks → switch active chat.
-		for _, chat := range m.Store.SortedChats() {
-			zoneID := ZoneSidebarRowPrefix + chat.ID
-			if zone.Get(zoneID).InBounds(msg) {
-				m.clearModalState()
-				m.Store.SetActiveChat(chat.ID)
-				m.syncInputFromDraft()
-				m.refreshViewport()
-				return m, nil
-			}
-		}
-
-		// Reaction picker cells (only meaningful while reacting).
-		if m.reactingTo != "" {
-			for _, emoji := range reactionPicks {
-				if zone.Get(ZoneReactionPrefix + emoji).InBounds(msg) {
-					m.submitReaction(emoji)
-					return m, nil
-				}
-			}
-		}
-
-		// Action row buttons on the currently-selected message.
-		if m.selecting && m.selectedID != "" {
-			if zone.Get(ZoneReplyButton).InBounds(msg) {
-				m.replyingTo = m.selectedID
-				m.exitSelectMode()
-				m.refreshViewport()
-				return m, nil
-			}
-			if zone.Get(ZoneReactButton).InBounds(msg) {
-				m.reactingTo = m.selectedID
-				m.reactionIdx = 0
-				m.selecting = false
-				m.refreshViewport()
-				return m, nil
-			}
-		}
-
-		// Attachment chip clicks → toggle preview.
-		if active, ok := m.Store.ActiveChat(); ok {
-			for i := range active.Entries {
-				e := active.Entries[i]
-				if e.Content.Type != "attachment" || !kitty.SupportedMimeType(e.Content.MimeType) {
-					continue
-				}
-				zoneID := ZoneAttachmentPrefix + e.ID
-				if !zone.Get(zoneID).InBounds(msg) {
-					continue
-				}
-				if hovered := m.Store.HoveredPreview(); hovered != nil && hovered.CacheKey == e.Content.Name {
-					m.Store.SetHoveredPreview(nil)
+	// Toggle expand/collapse of a specific log entry.
+	if m.logVisible {
+		for _, e := range m.Store.SystemEntries() {
+			if zone.Get(ZoneLogEntryPrefix + e.ID).InBounds(msg) {
+				if m.expandedLogs[e.ID] {
+					delete(m.expandedLogs, e.ID)
 				} else {
-					m.Store.SetHoveredPreview(&store.HoveredPreview{
-						CacheKey: e.Content.Name,
-						Name:     e.Content.Name,
-						Path:     e.AttachmentPath,
-					})
+					m.expandedLogs[e.ID] = true
 				}
-				return m, nil
-			}
-		}
-
-		// Message body clicks → select that message (or toggle off if it was
-		// already the selection). System chat is read-only — no selection.
-		if active, ok := m.Store.ActiveChat(); ok && active.ID != store.SystemChatID {
-			for i := range active.Entries {
-				e := active.Entries[i]
-				if !zone.Get(ZoneMessagePrefix + e.ID).InBounds(msg) {
-					continue
-				}
-				if m.selecting && m.selectedID == e.ID {
-					m.exitSelectMode()
-				} else {
-					m.selecting = true
-					m.selectedID = e.ID
-				}
-				m.refreshViewport()
 				return m, nil
 			}
 		}
 	}
+
+	// Sidebar clicks → switch active chat.
+	for _, chat := range m.Store.SortedChats() {
+		zoneID := ZoneSidebarRowPrefix + chat.ID
+		if zone.Get(zoneID).InBounds(msg) {
+			m.clearModalState()
+			m.Store.SetActiveChat(chat.ID)
+			m.syncInputFromDraft()
+			m.refreshViewport()
+			return m, nil
+		}
+	}
+
+	// Reaction picker cells (only meaningful while reacting).
+	if m.reactingTo != "" {
+		for _, emoji := range reactionPicks {
+			if zone.Get(ZoneReactionPrefix + emoji).InBounds(msg) {
+				m.submitReaction(emoji)
+				return m, nil
+			}
+		}
+	}
+
+	// Action row buttons on the currently-selected message.
+	if m.selecting && m.selectedID != "" {
+		if zone.Get(ZoneReplyButton).InBounds(msg) {
+			m.replyingTo = m.selectedID
+			m.exitSelectMode()
+			m.refreshViewport()
+			return m, nil
+		}
+		if zone.Get(ZoneReactButton).InBounds(msg) {
+			m.reactingTo = m.selectedID
+			m.reactionIdx = 0
+			m.selecting = false
+			m.refreshViewport()
+			return m, nil
+		}
+	}
+
+	// Attachment chip clicks → toggle preview.
+	if active, ok := m.Store.ActiveChat(); ok {
+		for i := range active.Entries {
+			e := active.Entries[i]
+			if e.Content.Type != "attachment" || !kitty.SupportedMimeType(e.Content.MimeType) {
+				continue
+			}
+			zoneID := ZoneAttachmentPrefix + e.ID
+			if !zone.Get(zoneID).InBounds(msg) {
+				continue
+			}
+			if hovered := m.Store.HoveredPreview(); hovered != nil && hovered.CacheKey == e.Content.Name {
+				m.Store.SetHoveredPreview(nil)
+			} else {
+				m.Store.SetHoveredPreview(&store.HoveredPreview{
+					CacheKey: e.Content.Name,
+					Name:     e.Content.Name,
+					Path:     e.AttachmentPath,
+				})
+			}
+			return m, nil
+		}
+	}
+
+	// Message body clicks → select that message (or toggle off if it was
+	// already the selection). System chat is read-only — no selection.
+	if active, ok := m.Store.ActiveChat(); ok && active.ID != store.SystemChatID {
+		for i := range active.Entries {
+			e := active.Entries[i]
+			if !zone.Get(ZoneMessagePrefix + e.ID).InBounds(msg) {
+				continue
+			}
+			if m.selecting && m.selectedID == e.ID {
+				m.exitSelectMode()
+			} else {
+				m.selecting = true
+				m.selectedID = e.ID
+			}
+			m.refreshViewport()
+			return m, nil
+		}
+	}
+
 	return m, nil
 }
 
@@ -925,12 +1054,13 @@ func (m *Model) refreshViewport() {
 	// styling escapes, giving us rows that align 1:1 with the viewport's.
 	m.plainLogLines = strings.Split(ansi.Strip(content), "\n")
 
-	// If a drag-selection is active, overlay reverse-video on the selected
-	// column range within each affected row. Preserve styling outside the
-	// selection by using ansi.Cut to slice styled content; the selected span
-	// itself renders plain + reverse (its original colors are lost during
-	// the drag — acceptable, restored when selection clears).
-	if m.dragActive {
+	// If a chat-pane drag-selection is active, overlay reverse-video on the
+	// selected column range within each affected row. Preserve styling
+	// outside the selection by using ansi.Cut to slice styled content; the
+	// selected span itself renders plain + reverse (its original colors are
+	// lost during the drag, restored when selection clears). System-log
+	// drags are handled separately inside renderLogColumn.
+	if m.dragActive && m.dragPane == paneChat {
 		styledLines := strings.Split(content, "\n")
 		loRow, loCol, hiRow, hiCol := m.selectionRange()
 		if loRow < 0 {
@@ -1248,6 +1378,50 @@ func (m *Model) renderLogColumn(height int) string {
 	}
 	for len(rendered) < bodyHeight {
 		rendered = append([]string{""}, rendered...)
+	}
+
+	// Capture plain-text mirror of body rows for drag-select extraction.
+	m.plainSystemLogLines = make([]string, len(rendered))
+	for i, s := range rendered {
+		m.plainSystemLogLines[i] = ansi.Strip(s)
+	}
+
+	// If a log-pane drag-selection is active, overlay reverse-video on the
+	// selected span of each affected row. Mirrors the chat-pane logic in
+	// refreshViewport.
+	if m.dragActive && m.dragPane == paneSystemLog {
+		loRow, loCol, hiRow, hiCol := m.selectionRange()
+		if loRow < 0 {
+			loRow = 0
+		}
+		if hiRow >= len(rendered) {
+			hiRow = len(rendered) - 1
+		}
+		reverse := lipgloss.NewStyle().Reverse(true)
+		for r := loRow; r <= hiRow && r < len(m.plainSystemLogLines); r++ {
+			plain := m.plainSystemLogLines[r]
+			lineW := runewidth.StringWidth(plain)
+			from, to := 0, lineW
+			if r == loRow {
+				from = loCol
+			}
+			if r == hiRow {
+				to = hiCol
+			}
+			if from > lineW {
+				from = lineW
+			}
+			if to > lineW {
+				to = lineW
+			}
+			if from >= to {
+				continue
+			}
+			left := ansi.Cut(rendered[r], 0, from)
+			mid := reverse.Render(plainSliceByCols(plain, from, to))
+			right := ansi.Cut(rendered[r], to, lineW)
+			rendered[r] = left + mid + right
+		}
 	}
 
 	inner := strings.Join(append([]string{header, rule}, rendered...), "\n")
