@@ -1234,10 +1234,10 @@ func zoneMarkSidebar(theme Theme, chats []store.ChatState, activeID string, heig
 }
 
 func (m *Model) zoneMarkEntries(theme Theme, chat store.ChatState, width int) string {
-	lines := make([]string, 0, len(chat.Entries)+4)
+	blocks := make([]string, 0, len(chat.Entries)+1)
 	if chat.DroppedCount > 0 {
 		msg := fmt.Sprintf("… %d older messages dropped", chat.DroppedCount)
-		lines = append(lines, lipgloss.NewStyle().Foreground(theme.SystemColor).Render(msg))
+		blocks = append(blocks, lipgloss.NewStyle().Foreground(theme.SystemColor).Render(msg))
 	}
 	for i := range chat.Entries {
 		e := chat.Entries[i]
@@ -1252,12 +1252,24 @@ func (m *Model) zoneMarkEntries(theme Theme, chat store.ChatState, width int) st
 		}
 		// Wrap every entry with a click-zone so mouse users can select it.
 		rendered = zone.Mark(ZoneMessagePrefix+e.ID, rendered)
-		lines = append(lines, rendered)
+		// The action row stays attached to the selected entry (no blank gap)
+		// so it visually belongs to it.
 		if e.ID == m.selectedID && m.selecting {
-			lines = append(lines, renderActionRow(theme))
+			rendered = rendered + "\n" + renderActionRow(theme)
 		}
+		blocks = append(blocks, rendered)
 	}
-	return strings.Join(lines, "\n")
+	// A solid full-width rule between entries in the dim timestamp color —
+	// spans the chat column (not the inner content width), so it visually
+	// runs edge-to-edge against the log-column border.
+	ruleWidth := m.chatAreaWidth() + 10
+	if ruleWidth < 10 {
+		ruleWidth = 10
+	}
+	rule := lipgloss.NewStyle().Foreground(theme.TimestampColor).Render(
+		strings.Repeat("─", ruleWidth))
+	sep := "\n" + rule + "\n"
+	return strings.Join(blocks, sep)
 }
 
 func renderActionRow(theme Theme) string {

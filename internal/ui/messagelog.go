@@ -74,12 +74,31 @@ func renderEntry(theme Theme, e store.LogEntry, allEntries []store.LogEntry, wid
 	main := tsPart + rolePart + sep + body
 
 	if e.ReplyTo != "" {
-		quoted := findEntryQuote(allEntries, e.ReplyTo)
-		if quoted != "" {
-			rStyle := lipgloss.NewStyle().Foreground(theme.BorderColor)
-			qStyle := lipgloss.NewStyle().Foreground(theme.SystemColor)
-			quoteLine := rStyle.Render("  ┌─ ") + qStyle.Render(quoted)
-			main = quoteLine + "\n" + main
+		if q := findEntryByID(allEntries, e.ReplyTo); q != nil {
+			body := quoteBody(*q)
+			if body != "" {
+				roleLabel := "you"
+				roleColor := theme.UserColor
+				switch q.Role {
+				case store.RoleAgent:
+					roleLabel = "agent"
+					roleColor = theme.AgentColor
+				case store.RoleSystem:
+					roleLabel = "sys"
+					roleColor = theme.SystemColor
+				}
+				rStyle := lipgloss.NewStyle().Foreground(theme.BorderColor)
+				roleStyle := lipgloss.NewStyle().Foreground(roleColor).Bold(true)
+				tsStyle := lipgloss.NewStyle().Foreground(theme.TimestampColor)
+				qStyle := lipgloss.NewStyle().Foreground(theme.SystemColor)
+				ts := q.Timestamp.Format("15:04:05")
+				quoteLine := rStyle.Render("  ┌─ ") +
+					roleStyle.Render(roleLabel) +
+					qStyle.Render(" said at ") +
+					tsStyle.Render(ts) +
+					qStyle.Render(": "+body)
+				main = quoteLine + "\n" + main
+			}
 		}
 	}
 
@@ -159,29 +178,32 @@ func renderAttachmentLabel(theme Theme, e store.LogEntry, kind string) string {
 	return style.Render(label + name + tail)
 }
 
-func findEntryQuote(entries []store.LogEntry, id string) string {
+func findEntryByID(entries []store.LogEntry, id string) *store.LogEntry {
 	for i := range entries {
-		if entries[i].ID != id {
-			continue
+		if entries[i].ID == id {
+			return &entries[i]
 		}
-		e := entries[i]
-		c := e.Content
-		switch c.Type {
-		case "text":
-			return truncateRunes(c.Text, 60)
-		case "attachment":
-			return "[attachment: " + c.Name + "]"
-		case "voice":
-			name := c.Name
-			if name == "" {
-				name = "audio"
-			}
-			return "[voice: " + name + "]"
-		case "contact":
-			return "[contact]"
-		case "custom":
-			return "[custom]"
+	}
+	return nil
+}
+
+func quoteBody(e store.LogEntry) string {
+	c := e.Content
+	switch c.Type {
+	case "text":
+		return truncateRunes(c.Text, 60)
+	case "attachment":
+		return "[attachment: " + c.Name + "]"
+	case "voice":
+		name := c.Name
+		if name == "" {
+			name = "audio"
 		}
+		return "[voice: " + name + "]"
+	case "contact":
+		return "[contact]"
+	case "custom":
+		return "[custom]"
 	}
 	return ""
 }
