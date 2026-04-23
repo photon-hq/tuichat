@@ -974,9 +974,11 @@ func (m *Model) refreshViewport() {
 // chatAreaWidth is the width of the chat column (messages + typing line).
 // Shrinks when the right-hand log panel is visible.
 func (m *Model) chatAreaWidth() int {
-	w := m.width - SidebarWidth
+	// Terminal width minus: sidebar content + sidebar's right border (1),
+	// minus log-column content + its left border (1) when visible.
+	w := m.width - SidebarWidth - 1
 	if m.logVisible {
-		w -= LogColumnWidth
+		w -= LogColumnWidth + 1
 	}
 	if w < 20 {
 		w = 20
@@ -987,7 +989,8 @@ func (m *Model) chatAreaWidth() int {
 // inputWidth is the width of the input container, which always spans the full
 // main area (chat column + log column when open) below the sidebar.
 func (m *Model) inputWidth() int {
-	w := m.width - SidebarWidth - 2 // 2 for rounded-border left/right
+	// -1 sidebar border, -2 rounded-border left/right of the input container.
+	w := m.width - SidebarWidth - 1 - 2
 	if w < 10 {
 		w = 10
 	}
@@ -1006,7 +1009,7 @@ func (m *Model) layoutInner() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	logWidth := m.chatAreaWidth() - 2
+	logWidth := m.chatAreaWidth()
 	if logWidth < 20 {
 		logWidth = 20
 	}
@@ -1266,7 +1269,7 @@ func (m *Model) renderTitleBar(activeID string) string {
 	// bar all the way right so the re-open toggle stays visible.
 	rightWidth := m.chatAreaWidth()
 	if !m.logVisible {
-		rightWidth = m.width - SidebarWidth
+		rightWidth = m.width - SidebarWidth - 1 // -1 for sidebar border
 	}
 	if rightWidth <= 0 {
 		return ""
@@ -1572,7 +1575,10 @@ func (m *Model) zoneMarkEntries(theme Theme, chat store.ChatState, width int) st
 	// A solid full-width rule between entries in the dim timestamp color —
 	// spans the chat column (not the inner content width), so it visually
 	// runs edge-to-edge against the log-column border.
-	ruleWidth := m.chatAreaWidth() + 10
+	// Full chat-column width — now that chatAreaWidth is the correct size
+	// (sidebar + log-column borders accounted for), the rule spans exactly
+	// from chat edge to chat edge.
+	ruleWidth := m.chatAreaWidth()
 	if ruleWidth < 10 {
 		ruleWidth = 10
 	}
