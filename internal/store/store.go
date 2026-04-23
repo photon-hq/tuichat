@@ -121,12 +121,27 @@ func (s *Store) SetCommands(cmds []CommandDef) {
 	s.commands = append([]CommandDef(nil), cmds...)
 }
 
-// SortedChats returns the system chat pinned first, then user chats ordered
-// by lastActivityAt descending.
+// SortedChats returns user chats ordered by lastActivityAt descending. The
+// pinned system chat (agent-side console output) is excluded — it's surfaced
+// in a dedicated right-hand log column, not the sidebar.
 func (s *Store) SortedChats() []ChatState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sortedLocked()
+}
+
+// SystemEntries returns a snapshot of the system chat's log entries, or nil
+// if no log has been captured yet.
+func (s *Store) SystemEntries() []LogEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.chats[SystemChatID]
+	if !ok || len(c.Entries) == 0 {
+		return nil
+	}
+	out := make([]LogEntry, len(c.Entries))
+	copy(out, c.Entries)
+	return out
 }
 
 func (s *Store) ActiveChat() (ChatState, bool) {
@@ -204,11 +219,8 @@ func (s *Store) CycleActiveChat(delta int) {
 
 func (s *Store) sortedLocked() []ChatState {
 	out := make([]ChatState, 0, len(s.chats))
-	var system *ChatState
 	for _, c := range s.chats {
 		if c.ID == SystemChatID {
-			cp := *c
-			system = &cp
 			continue
 		}
 		out = append(out, *c)
@@ -216,9 +228,6 @@ func (s *Store) sortedLocked() []ChatState {
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].LastActivityAt.After(out[j].LastActivityAt)
 	})
-	if system != nil {
-		out = append([]ChatState{*system}, out...)
-	}
 	return out
 }
 

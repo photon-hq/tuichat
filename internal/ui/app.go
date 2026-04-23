@@ -34,7 +34,13 @@ const (
 	ZoneReplyButton      = "action-reply"
 	ZoneReactButton      = "action-react"
 	ZoneReactionPrefix   = "reaction:" // each quick-pick emoji in the picker
+	ZoneLogToggle        = "log-toggle"
+	ZoneLogEntryPrefix   = "log-entry:" // click a log line to expand/collapse
 )
+
+// LogColumnWidth is the fixed width (in cells) of the right-hand system log
+// panel. Includes a 1-cell border on the left.
+const LogColumnWidth = 40
 
 // reactionPicks is the fixed set of quick-pick reactions shown in the picker.
 var reactionPicks = []string{"👍", "❤️", "😂", "😮", "😢", "🎉"}
@@ -49,6 +55,7 @@ var helpLines = []string{
 	"  Ctrl+N         new chat",
 	"  Ctrl+J / K     cycle chats (down / up)",
 	"  Ctrl+L         clear active chat",
+	"  Ctrl+`         toggle system-log panel",
 	"  Ctrl+C         exit",
 	"  Tab            complete slash command",
 	"  Esc            cancel input / exit select / drop attachments",
@@ -87,6 +94,11 @@ type Model struct {
 	replyingTo  string // non-empty → next submit is a quoted reply
 	reactingTo  string // non-empty → emoji picker open for this entry
 	reactionIdx int
+
+	// Right-hand system log panel. Open by default; toggled via a title-bar
+	// button or Ctrl+Backtick.
+	logVisible   bool
+	expandedLogs map[string]bool // log entry IDs currently shown fully-wrapped
 }
 
 // NewModel builds an initialized Model. Caller is expected to wire a RPC server
@@ -100,10 +112,12 @@ func NewModel(s *store.Store) *Model {
 
 	vp := viewport.New(80, 20)
 	return &Model{
-		Store: s,
-		theme: DefaultTheme,
-		input: in,
-		log:   vp,
+		Store:        s,
+		theme:        DefaultTheme,
+		input:        in,
+		log:          vp,
+		logVisible:   true,
+		expandedLogs: map[string]bool{},
 	}
 }
 
@@ -179,6 +193,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.Store.AppendSystem(id, "screen cleared")
 			m.refreshViewport()
 		}
+		return m, nil
+	case "ctrl+`":
+		m.logVisible = !m.logVisible
+		m.layoutInner()
 		return m, nil
 	case "tab":
 		m.cycleSlashCompletion()
@@ -391,6 +409,27 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if msg.Action != tea.MouseActionPress {
 			return m, nil
 		}
+		// Toggle log panel.
+		if zone.Get(ZoneLogToggle).InBounds(msg) {
+			m.logVisible = !m.logVisible
+			m.layoutInner()
+			return m, nil
+		}
+
+		// Toggle expand/collapse of a specific log entry.
+		if m.logVisible {
+			for _, e := range m.Store.SystemEntries() {
+				if zone.Get(ZoneLogEntryPrefix + e.ID).InBounds(msg) {
+					if m.expandedLogs[e.ID] {
+						delete(m.expandedLogs, e.ID)
+					} else {
+						m.expandedLogs[e.ID] = true
+					}
+					return m, nil
+				}
+			}
+		}
+
 		// Sidebar clicks → switch active chat.
 		for _, chat := range m.Store.SortedChats() {
 			zoneID := ZoneSidebarRowPrefix + chat.ID
@@ -625,8 +664,31 @@ func (m *Model) refreshViewport() {
 	m.log.GotoBottom()
 }
 
+// chatAreaWidth is the width of the chat column (messages + typing line).
+// Shrinks when the right-hand log panel is visible.
+func (m *Model) chatAreaWidth() int {
+	w := m.width - SidebarWidth
+	if m.logVisible {
+		w -= LogColumnWidth
+	}
+	if w < 20 {
+		w = 20
+	}
+	return w
+}
+
+// inputWidth is the width of the input container, which always spans the full
+// main area (chat column + log column when open) below the sidebar.
+func (m *Model) inputWidth() int {
+	w := m.width - SidebarWidth - 2 // 2 for rounded-border left/right
+	if w < 10 {
+		w = 10
+	}
+	return w
+}
+
 func (m *Model) logInnerWidth() int {
-	w := m.width - SidebarWidth - 2 // 2 for input-box padding
+	w := m.chatAreaWidth() - 2 // 2 for input-box padding
 	if w < 20 {
 		w = 20
 	}
@@ -637,7 +699,7 @@ func (m *Model) layoutInner() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	logWidth := m.width - SidebarWidth - 2
+	logWidth := m.chatAreaWidth() - 2
 	if logWidth < 20 {
 		logWidth = 20
 	}
@@ -649,7 +711,7 @@ func (m *Model) layoutInner() {
 	}
 	m.log.Width = logWidth
 	m.log.Height = logHeight
-	m.input.Width = logWidth - 2
+	m.input.Width = m.inputWidth() - 2
 	m.refreshViewport()
 }
 
@@ -677,13 +739,27 @@ func (m *Model) View() string {
 
 	inputContainer := m.renderInputContainer(chat, hasActive)
 
-	rightCol := lipgloss.JoinVertical(lipgloss.Left,
+	// Stacked rows in the chat column: title + messages + typing line.
+	chatCol := lipgloss.JoinVertical(lipgloss.Left,
 		titleBar,
 		m.log.View(),
 		typingLine,
-		inputContainer,
 	)
 
+	// Top half: chat column plus, when enabled, the system-log column on the
+	// right. The input container spans across both below.
+	var topRow string
+	if m.logVisible {
+		// topHeight = title(1) + log.Height + typing(1) — we render the log
+		// panel to the same vertical extent so borders align.
+		topHeight := 1 + m.log.Height + 1
+		logCol := m.renderLogColumn(topHeight)
+		topRow = lipgloss.JoinHorizontal(lipgloss.Top, chatCol, logCol)
+	} else {
+		topRow = chatCol
+	}
+
+	rightCol := lipgloss.JoinVertical(lipgloss.Left, topRow, inputContainer)
 	frame := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, rightCol)
 
 	// Floating preview overlay (top-right).
@@ -697,8 +773,191 @@ func (m *Model) View() string {
 	return zone.Scan(frame)
 }
 
+// renderLogEntryLines renders a single log entry. Collapsed entries get one
+// truncated line; expanded entries wrap to as many lines as the body needs,
+// with continuation lines indented to align past the `[level]` prefix. Every
+// line is wrapped in the same click zone so clicking any of them toggles the
+// entry's expansion state.
+func (m *Model) renderLogEntryLines(e store.LogEntry, width int) []string {
+	zoneID := ZoneLogEntryPrefix + e.ID
+	text := e.Content.Text
+
+	if !m.expandedLogs[e.ID] {
+		body := text
+		if runewidth.StringWidth(body) > width {
+			body = runewidth.Truncate(body, width, "…")
+		}
+		return []string{zone.Mark(zoneID, renderLogText(m.theme, body))}
+	}
+
+	// Expanded: render the level token, then wrap the body.
+	level, rest := parseLogLevel(text)
+	levelColor := m.theme.SystemColor
+	switch level {
+	case "error":
+		levelColor = lipgloss.Color("#f87171")
+	case "warn":
+		levelColor = lipgloss.Color("#fbbf24")
+	case "info":
+		levelColor = lipgloss.Color("#60a5fa")
+	case "debug":
+		levelColor = lipgloss.Color("#9ca3af")
+	}
+	levelStyle := lipgloss.NewStyle().Foreground(levelColor).Bold(true)
+	bodyStyle := lipgloss.NewStyle().Foreground(m.theme.SystemColor)
+
+	prefix := "[" + level + "]"
+	prefixW := runewidth.StringWidth(prefix) + 1 // trailing space
+	avail := width - prefixW
+	if avail < 10 {
+		avail = 10
+	}
+	chunks := wrapByWidth(rest, avail)
+	if len(chunks) == 0 {
+		chunks = []string{""}
+	}
+	indent := strings.Repeat(" ", prefixW)
+
+	out := make([]string, 0, len(chunks))
+	for i, c := range chunks {
+		if i == 0 {
+			out = append(out, levelStyle.Render(prefix)+" "+bodyStyle.Render(c))
+		} else {
+			out = append(out, indent+bodyStyle.Render(c))
+		}
+	}
+	// Mark the whole block as a single zone so clicks on continuation lines
+	// register the same as clicks on the first line. bubblezone tracks a
+	// multi-row bounding box when start/end markers sit on different rows.
+	marked := zone.Mark(zoneID, strings.Join(out, "\n"))
+	return strings.Split(marked, "\n")
+}
+
+// parseLogLevel splits a "[level] rest" string. Returns ("log", text) if the
+// text doesn't carry a level prefix.
+func parseLogLevel(text string) (string, string) {
+	if !strings.HasPrefix(text, "[") {
+		return "log", text
+	}
+	end := strings.Index(text, "] ")
+	if end < 0 {
+		return "log", text
+	}
+	return text[1:end], text[end+2:]
+}
+
+// wrapByWidth splits a plain string into lines so each is at most `w` visible
+// cells wide. Rune-aware, not word-aware — good enough for JSON and other log
+// payloads that dominate the system log.
+func wrapByWidth(s string, w int) []string {
+	if w <= 0 {
+		return []string{s}
+	}
+	var out []string
+	var line strings.Builder
+	lineW := 0
+	for _, r := range s {
+		rw := runewidth.RuneWidth(r)
+		if rw == 0 {
+			rw = 1
+		}
+		if lineW+rw > w && lineW > 0 {
+			out = append(out, line.String())
+			line.Reset()
+			lineW = 0
+		}
+		line.WriteRune(r)
+		lineW += rw
+	}
+	if line.Len() > 0 {
+		out = append(out, line.String())
+	}
+	return out
+}
+
+// renderLogColumn renders the right-hand system log panel. Height must match
+// the combined height of titleBar + messages viewport + typing line so the
+// input below spans both columns cleanly.
+func (m *Model) renderLogColumn(height int) string {
+	innerW := LogColumnWidth - 3 // 1 border + 2 padding
+	if innerW < 8 {
+		innerW = 8
+	}
+
+	closeBtn := zone.Mark(ZoneLogToggle,
+		lipgloss.NewStyle().Foreground(m.theme.PromptColor).Render("[×]"),
+	)
+	headerLabel := lipgloss.NewStyle().
+		Foreground(m.theme.SystemColor).
+		Render("system log")
+	// header: "system log" + right-aligned close button, padded to innerW
+	labelW := runewidth.StringWidth("system log")
+	btnW := runewidth.StringWidth("[×]")
+	pad := innerW - labelW - btnW
+	if pad < 1 {
+		pad = 1
+	}
+	header := headerLabel + strings.Repeat(" ", pad) + closeBtn
+	rule := lipgloss.NewStyle().Foreground(m.theme.BorderColor).
+		Render(strings.Repeat("─", innerW))
+
+	// Body: tail of system entries that fit. Collapsed entries render on one
+	// line (truncated with `…`); clicking an entry toggles its expansion to
+	// fully wrapped multi-line display.
+	entries := m.Store.SystemEntries()
+	bodyHeight := height - 3 /*header + rule + bottom margin*/
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+
+	// Walk newest→oldest, render each entry to 1 or more lines, stop once we
+	// have enough to fill bodyHeight. Reverse so display order is old→new.
+	rendered := make([]string, 0, bodyHeight)
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		if e.Content.Type != "text" {
+			continue
+		}
+		lines := m.renderLogEntryLines(e, innerW)
+		for j := len(lines) - 1; j >= 0; j-- {
+			rendered = append(rendered, lines[j])
+			if len(rendered) >= bodyHeight {
+				break
+			}
+		}
+		if len(rendered) >= bodyHeight {
+			break
+		}
+	}
+	// Reverse.
+	for l, r := 0, len(rendered)-1; l < r; l, r = l+1, r-1 {
+		rendered[l], rendered[r] = rendered[r], rendered[l]
+	}
+	for len(rendered) < bodyHeight {
+		rendered = append([]string{""}, rendered...)
+	}
+
+	inner := strings.Join(append([]string{header, rule}, rendered...), "\n")
+	return lipgloss.NewStyle().
+		Width(LogColumnWidth).
+		Height(height).
+		MaxWidth(LogColumnWidth).
+		BorderStyle(lipgloss.Border{Left: "│"}).
+		BorderLeft(true).
+		BorderForeground(m.theme.BorderColor).
+		Padding(0, 1).
+		Render(inner)
+}
+
+
 func (m *Model) renderTitleBar(activeID string) string {
-	rightWidth := m.width - SidebarWidth
+	// When the log column is open it has its own [×] button, so the title bar
+	// only spans the chat column. When the log is hidden we extend the title
+	// bar all the way right so the re-open toggle stays visible.
+	rightWidth := m.chatAreaWidth()
+	if !m.logVisible {
+		rightWidth = m.width - SidebarWidth
+	}
 	if rightWidth <= 0 {
 		return ""
 	}
@@ -708,19 +967,7 @@ func (m *Model) renderTitleBar(activeID string) string {
 		title += " · " + activeID
 	}
 	title += " "
-	rest := " — Ctrl+N new · Ctrl+J/K nav · Ctrl+C exit · Ctrl+L clear · Tab complete · Esc cancel"
-
-	// Pre-truncate by visible width so the terminal doesn't hard-wrap us.
-	titleW := runewidth.StringWidth(title)
-	if titleW > rightWidth {
-		title = runewidth.Truncate(title, rightWidth, "")
-		rest = ""
-	} else {
-		avail := rightWidth - titleW
-		if runewidth.StringWidth(rest) > avail {
-			rest = runewidth.Truncate(rest, avail, "")
-		}
-	}
+	rest := " — Ctrl+N new · Ctrl+J/K nav · Ctrl+C exit · Ctrl+L clear · Tab complete"
 
 	titleStyle := lipgloss.NewStyle().
 		Foreground(m.theme.UserColor).
@@ -728,7 +975,41 @@ func (m *Model) renderTitleBar(activeID string) string {
 	subStyle := lipgloss.NewStyle().
 		Foreground(m.theme.SystemColor).
 		Background(m.theme.BorderColor)
-	rendered := titleStyle.Render(title) + subStyle.Render(rest)
+	btnStyle := lipgloss.NewStyle().
+		Foreground(m.theme.PromptColor).
+		Background(m.theme.BorderColor)
+
+	// Only show the title-bar toggle when the log is hidden — when open the
+	// column's own [×] handles closing.
+	var btnText string
+	if !m.logVisible {
+		btnText = " [log ▸] "
+	}
+	btnW := runewidth.StringWidth(btnText)
+
+	// Pre-truncate by visible width so the terminal doesn't hard-wrap us.
+	titleW := runewidth.StringWidth(title)
+	if titleW+btnW > rightWidth {
+		title = runewidth.Truncate(title, rightWidth-btnW, "")
+		rest = ""
+	} else {
+		avail := rightWidth - titleW - btnW
+		if runewidth.StringWidth(rest) > avail {
+			rest = runewidth.Truncate(rest, avail, "")
+		}
+	}
+	titleW = runewidth.StringWidth(title)
+	restW := runewidth.StringWidth(rest)
+	gap := rightWidth - titleW - restW - btnW
+	if gap < 0 {
+		gap = 0
+	}
+
+	rendered := titleStyle.Render(title) + subStyle.Render(rest) +
+		subStyle.Render(strings.Repeat(" ", gap))
+	if btnText != "" {
+		rendered += zone.Mark(ZoneLogToggle, btnStyle.Render(btnText))
+	}
 
 	return lipgloss.NewStyle().
 		Background(m.theme.BorderColor).
@@ -738,23 +1019,9 @@ func (m *Model) renderTitleBar(activeID string) string {
 }
 
 func (m *Model) renderInputContainer(chat store.ChatState, hasActive bool) string {
-	innerWidth := m.width - SidebarWidth - 2 /*rounded-border left/right*/ - 2 /*padding*/
+	innerWidth := m.inputWidth() - 2 /*padding*/
 	if innerWidth < 10 {
 		innerWidth = 10
-	}
-
-	// System chat is read-only: replace the input + chips area with a hint.
-	if hasActive && chat.ID == store.SystemChatID {
-		hint := lipgloss.NewStyle().
-			Foreground(m.theme.SystemColor).
-			Italic(true).
-			Render("— system log (read-only) —")
-		return lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(m.theme.BorderColor).
-			Padding(0, 1).
-			Width(m.width - SidebarWidth - 2).
-			Render(hint)
 	}
 
 	var rows []string
@@ -789,7 +1056,7 @@ func (m *Model) renderInputContainer(chat store.ChatState, hasActive bool) strin
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(m.theme.BorderColor).
 		Padding(0, 1).
-		Width(m.width - SidebarWidth - 2).
+		Width(m.inputWidth()).
 		Render(inner)
 }
 
@@ -932,12 +1199,6 @@ func zoneMarkSidebar(theme Theme, chats []store.ChatState, activeID string, heig
 			nameStyle = lipgloss.NewStyle().Foreground(theme.UserColor)
 		}
 		name := c.ID
-		if name == store.SystemChatID {
-			name = "system"
-			if !selected {
-				nameStyle = lipgloss.NewStyle().Foreground(theme.SystemColor)
-			}
-		}
 		if len(name) > SidebarWidth-4 {
 			name = name[:SidebarWidth-5] + "…"
 		}
