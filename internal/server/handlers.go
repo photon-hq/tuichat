@@ -99,7 +99,7 @@ func (s *Server) HandleRequest(method string, raw json.RawMessage) (any, error) 
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return nil, err
 		}
-		s.Store.React(p.SpaceID, p.MessageID, p.Reaction)
+		s.Store.React(p.SpaceID, p.MessageID, p.Reaction, store.RoleAgent)
 		s.notifyStoreChanged()
 		return nil, nil
 

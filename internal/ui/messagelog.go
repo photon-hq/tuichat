@@ -85,8 +85,15 @@ func renderEntry(theme Theme, e store.LogEntry, allEntries []store.LogEntry, wid
 
 	if len(e.Reactions) > 0 {
 		bStyle := lipgloss.NewStyle().Foreground(theme.BorderColor)
-		reactStyle := lipgloss.NewStyle().Foreground(theme.SystemColor)
-		main += "\n" + bStyle.Render("  └─ ") + reactStyle.Render(strings.Join(e.Reactions, " "))
+		parts := make([]string, 0, len(e.Reactions))
+		for _, r := range e.Reactions {
+			color := theme.UserColor
+			if r.By == store.RoleAgent {
+				color = theme.AgentColor
+			}
+			parts = append(parts, renderReactionPill(r.Emoji, color))
+		}
+		main += "\n" + bStyle.Render("  └─ ") + strings.Join(parts, " ")
 	}
 
 	_ = width // not used for hard-wrapping yet; terminal handles soft wrap
@@ -120,6 +127,16 @@ func renderLogText(theme Theme, text string) string {
 	}
 	levelStyle := lipgloss.NewStyle().Foreground(levelColor).Bold(true)
 	return levelStyle.Render("["+level+"]") + " " + bodyStyle.Render(rest)
+}
+
+// renderReactionPill draws an emoji reaction as a rounded colored pill using
+// Powerline Extra Symbols caps (U+E0B6 / U+E0B4). The caps carry the pill's
+// color as foreground so they blend seamlessly with the filled middle cell
+// whose background is the same color. Requires a Nerd-Font-capable terminal.
+func renderReactionPill(emoji string, color lipgloss.Color) string {
+	capStyle := lipgloss.NewStyle().Foreground(color)
+	midStyle := lipgloss.NewStyle().Background(color)
+	return capStyle.Render("") + midStyle.Render(emoji) + capStyle.Render("")
 }
 
 func renderAttachmentLabel(theme Theme, e store.LogEntry, kind string) string {

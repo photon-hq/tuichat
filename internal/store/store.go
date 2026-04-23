@@ -36,8 +36,15 @@ type LogEntry struct {
 	Content        protocol.Content
 	Timestamp      time.Time
 	ReplyTo        string
-	Reactions      []string
+	Reactions      []Reaction
 	AttachmentPath string
+}
+
+// Reaction is an emoji tagged with who placed it, so the renderer can color
+// user reactions vs agent reactions differently.
+type Reaction struct {
+	Emoji string
+	By    Role
 }
 
 type PendingAttachment struct {
@@ -282,7 +289,7 @@ func (s *Store) SetTyping(chatID string, v bool) {
 	}
 }
 
-func (s *Store) React(chatID, messageID, emoji string) {
+func (s *Store) React(chatID, messageID, emoji string, by Role) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.chats[chatID]
@@ -291,7 +298,7 @@ func (s *Store) React(chatID, messageID, emoji string) {
 	}
 	for i := range c.Entries {
 		if c.Entries[i].ID == messageID {
-			c.Entries[i].Reactions = append(c.Entries[i].Reactions, emoji)
+			c.Entries[i].Reactions = append(c.Entries[i].Reactions, Reaction{Emoji: emoji, By: by})
 			return
 		}
 	}

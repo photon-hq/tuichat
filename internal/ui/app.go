@@ -297,7 +297,7 @@ func (m *Model) submitReaction(emoji string) {
 		m.refreshViewport()
 		return
 	}
-	m.Store.React(chatID, targetID, emoji)
+	m.Store.React(chatID, targetID, emoji, store.RoleUser)
 	m.Store.PushUserReaction(chatID, targetID, emoji)
 	m.refreshViewport()
 }
