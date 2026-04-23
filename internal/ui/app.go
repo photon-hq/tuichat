@@ -1726,13 +1726,22 @@ func (m *Model) zoneMarkEntries(theme Theme, chat store.ChatState, width int) st
 		msg := fmt.Sprintf("… %d older messages dropped", chat.DroppedCount)
 		blocks = append(blocks, lipgloss.NewStyle().Foreground(theme.SystemColor).Render(msg))
 	}
+	selectedBG := lipgloss.NewStyle().
+		Background(theme.SuggestionBG).
+		Width(m.chatAreaWidth())
+	// Opening escape for SuggestionBG — re-injected after every inner `\x1b[0m`
+	// reset inside already-styled entries so the fill doesn't drop out when a
+	// child segment (timestamp, role label, body) finishes rendering.
+	bgOpen := extractBgOpenSeq(theme.SuggestionBG)
 	for i := range chat.Entries {
 		e := chat.Entries[i]
 		rendered := renderEntry(theme, e, chat.Entries, width)
-		if e.ID == m.selectedID && m.selecting {
-			rendered = lipgloss.NewStyle().
-				Background(theme.SuggestionBG).
-				Render(rendered)
+		selected := e.ID == m.selectedID && m.selecting
+		if selected {
+			// Full-width background fill so the selection reads as a single
+			// connected block rather than a ragged highlight around text.
+			rendered = strings.ReplaceAll(rendered, "\x1b[0m", "\x1b[0m"+bgOpen)
+			rendered = selectedBG.Render(rendered)
 		}
 		if e.Content.Type == "attachment" && kitty.SupportedMimeType(e.Content.MimeType) {
 			rendered = zone.Mark(ZoneAttachmentPrefix+e.ID, rendered)
@@ -1740,9 +1749,13 @@ func (m *Model) zoneMarkEntries(theme Theme, chat store.ChatState, width int) st
 		// Wrap every entry with a click-zone so mouse users can select it.
 		rendered = zone.Mark(ZoneMessagePrefix+e.ID, rendered)
 		// The action row stays attached to the selected entry (no blank gap)
-		// so it visually belongs to it.
-		if e.ID == m.selectedID && m.selecting {
-			rendered = rendered + "\n" + renderActionRow(theme)
+		// so it visually belongs to it. Same full-width fill joins it to
+		// the message above into one continuous highlighted section. Apply
+		// the same bg-reapply trick to the row so the gaps between buttons
+		// and the hint text don't drop the section fill.
+		if selected {
+			row := strings.ReplaceAll(renderActionRow(theme), "\x1b[0m", "\x1b[0m"+bgOpen)
+			rendered = rendered + "\n" + selectedBG.Render(row)
 		}
 		blocks = append(blocks, rendered)
 	}
@@ -1762,11 +1775,26 @@ func (m *Model) zoneMarkEntries(theme Theme, chat store.ChatState, width int) st
 	return strings.Join(blocks, sep)
 }
 
+// extractBgOpenSeq returns the ANSI escape prefix lipgloss emits for a given
+// background color — the bytes up to (but not including) the first content
+// character. Used to re-apply the outer background after inner `\x1b[0m`
+// resets, since lipgloss doesn't patch those itself.
+func extractBgOpenSeq(color lipgloss.Color) string {
+	const sentinel = "\x01"
+	sample := lipgloss.NewStyle().Background(color).Render(sentinel)
+	if idx := strings.Index(sample, sentinel); idx > 0 {
+		return sample[:idx]
+	}
+	return ""
+}
+
 func renderActionRow(theme Theme) string {
 	btn := func(label string, zoneID string) string {
+		// Contrasts against the SuggestionBG section fill so the buttons
+		// stand out as clickable chips on the highlighted row.
 		st := lipgloss.NewStyle().
 			Foreground(theme.PromptColor).
-			Background(theme.SuggestionBG).
+			Background(theme.SuggestionSelectedBG).
 			Padding(0, 1)
 		return zone.Mark(zoneID, st.Render(label))
 	}
