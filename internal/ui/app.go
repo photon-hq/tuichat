@@ -3,6 +3,7 @@
 package ui
 
 import (
+	"encoding/base64"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -11,12 +12,15 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/mosaic"
+	"go.dalton.dog/bubbleup"
 	zone "github.com/lrstanley/bubblezone"
 	"github.com/mattn/go-runewidth"
 
@@ -25,6 +29,9 @@ import (
 	"github.com/photon-hq/tuichat/internal/protocol"
 	"github.com/photon-hq/tuichat/internal/store"
 )
+
+// copyAlertDuration is how long the copy confirmation bubble sits on screen.
+const copyAlertDuration = 3 * time.Second
 
 // Zone IDs used with bubblezone for click/hover routing.
 const (
@@ -99,6 +106,23 @@ type Model struct {
 	// button or Ctrl+Backtick.
 	logVisible   bool
 	expandedLogs map[string]bool // log entry IDs currently shown fully-wrapped
+
+	// Drag-select state. Row indices into plainLogLines (viewport YOffset
+	// pre-applied); col indices are display-cell columns into each row.
+	//   dragActive     — a selection is visible and highlighted
+	//   dragInProgress — mouse button currently held; motion updates end
+	//   dragMoved      — any motion fired between press and release
+	dragActive     bool
+	dragInProgress bool
+	dragMoved      bool
+	dragStartRow   int
+	dragStartCol   int
+	dragEndRow     int
+	dragEndCol     int
+	plainLogLines  []string // ANSI-stripped mirror of viewport content
+
+	// Copy-confirmation bubble (library-driven).
+	alert bubbleup.AlertModel
 }
 
 // NewModel builds an initialized Model. Caller is expected to wire a RPC server
@@ -111,6 +135,13 @@ func NewModel(s *store.Store) *Model {
 	in.CharLimit = 10000
 
 	vp := viewport.New(80, 20)
+
+	// bubbleup AlertModel: fixed-width bubble at the top-right, using
+	// Unicode prefixes so it renders cleanly without requiring a Nerd Font.
+	alert := bubbleup.NewAlertModel(40, false, copyAlertDuration).
+		WithPosition(bubbleup.TopRightPosition).
+		WithUnicodePrefix()
+
 	return &Model{
 		Store:        s,
 		theme:        DefaultTheme,
@@ -118,11 +149,12 @@ func NewModel(s *store.Store) *Model {
 		log:          vp,
 		logVisible:   true,
 		expandedLogs: map[string]bool{},
+		alert:        alert,
 	}
 }
 
 func (m *Model) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(textinput.Blink, m.alert.Init())
 }
 
 // Update handles Bubbletea messages.
@@ -136,20 +168,43 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Any keystroke clears a persisted drag-selection.
+		if m.dragActive {
+			m.clearDragSelection()
+			m.refreshViewport()
+		}
 		return m.handleKey(msg)
 
 	case tea.MouseMsg:
 		return m.handleMouse(msg)
 
 	case StoreChangedMsg:
+		// New content shifts row indices; clear any persisted drag-selection
+		// so the highlighted range doesn't point at something else now.
+		if m.dragActive {
+			m.clearDragSelection()
+		}
 		m.refreshViewport()
-		return m, nil
+		return m, m.forwardToAlert(msg)
 	}
 
+	// Any other message (incl. bubbleup's internal tick) needs to reach the
+	// alert model so it can drive its own animation + dismissal timer.
+	alertCmd := m.forwardToAlert(msg)
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	m.onInputChange()
-	return m, cmd
+	return m, tea.Batch(cmd, alertCmd)
+}
+
+// forwardToAlert routes a message through the bubbleup AlertModel and
+// captures both its updated state and any command it wants run.
+func (m *Model) forwardToAlert(msg tea.Msg) tea.Cmd {
+	out, cmd := m.alert.Update(msg)
+	if updated, ok := out.(bubbleup.AlertModel); ok {
+		m.alert = updated
+	}
+	return cmd
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -360,14 +415,177 @@ func (m *Model) exitSelectMode() {
 	m.selectedID = ""
 }
 
-// clearModalState drops any cross-message modes (select, reply, react). Used
-// when switching chats — the targets only make sense in their original chat.
+// clearModalState drops any cross-message modes (select, reply, react, drag-
+// selection). Used when switching chats — the targets only make sense in
+// their original chat.
 func (m *Model) clearModalState() {
 	m.selecting = false
 	m.selectedID = ""
 	m.replyingTo = ""
 	m.reactingTo = ""
 	m.reactionIdx = 0
+	m.clearDragSelection()
+}
+
+// clearDragSelection resets the drag-select fields. Doesn't clear the toast —
+// the copy-confirmation runs its own independent 3-second timer.
+func (m *Model) clearDragSelection() {
+	m.dragActive = false
+	m.dragInProgress = false
+	m.dragMoved = false
+	m.dragStartRow = 0
+	m.dragStartCol = 0
+	m.dragEndRow = 0
+	m.dragEndCol = 0
+}
+
+// inMessageLogRect returns true if screen coords (x,y) fall inside the
+// chat-column viewport — the area that participates in drag-select.
+func (m *Model) inMessageLogRect(x, y int) bool {
+	// Screen row 0 is the title bar; viewport rows start at 1.
+	if y < 1 || y > m.log.Height {
+		return false
+	}
+	colMin := SidebarWidth + 1
+	colMax := SidebarWidth + m.chatAreaWidth()
+	return x >= colMin && x <= colMax
+}
+
+// screenRowToContentRow maps a screen Y to an index into plainLogLines,
+// accounting for viewport scroll offset and clamping to the content range.
+func (m *Model) screenRowToContentRow(y int) int {
+	row := (y - 1) + m.log.YOffset
+	if row < 0 {
+		row = 0
+	}
+	if n := len(m.plainLogLines); n > 0 && row > n-1 {
+		row = n - 1
+	}
+	return row
+}
+
+// screenColToContentCol maps a screen X to a display-cell column within the
+// chat column's inner content area (0 = first cell of a message line).
+func (m *Model) screenColToContentCol(x int) int {
+	col := x - (SidebarWidth + 1)
+	if col < 0 {
+		col = 0
+	}
+	return col
+}
+
+// selectionRange normalizes the drag endpoints so (loRow,loCol) is always
+// before (hiRow,hiCol) in reading order.
+func (m *Model) selectionRange() (loRow, loCol, hiRow, hiCol int) {
+	loRow, loCol = m.dragStartRow, m.dragStartCol
+	hiRow, hiCol = m.dragEndRow, m.dragEndCol
+	if hiRow < loRow || (hiRow == loRow && hiCol < loCol) {
+		loRow, loCol, hiRow, hiCol = hiRow, hiCol, loRow, loCol
+	}
+	return
+}
+
+// plainSliceByCols returns the substring of `s` covering display-cell columns
+// [from, to). Respects rune widths (emoji, CJK = 2 cells).
+func plainSliceByCols(s string, from, to int) string {
+	if from >= to {
+		return ""
+	}
+	var out strings.Builder
+	col := 0
+	for _, r := range s {
+		rw := runewidth.RuneWidth(r)
+		if rw == 0 {
+			rw = 1
+		}
+		if col >= to {
+			break
+		}
+		if col >= from {
+			out.WriteRune(r)
+		}
+		col += rw
+	}
+	return out.String()
+}
+
+func (m *Model) handleDragMotion(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	row := m.screenRowToContentRow(msg.Y)
+	col := m.screenColToContentCol(msg.X)
+	if row == m.dragEndRow && col == m.dragEndCol && m.dragMoved {
+		return m, nil
+	}
+	if row != m.dragStartRow || col != m.dragStartCol {
+		m.dragMoved = true
+		m.dragActive = true
+	}
+	m.dragEndRow = row
+	m.dragEndCol = col
+	m.refreshViewport()
+	return m, nil
+}
+
+func (m *Model) handleDragRelease(_ tea.MouseMsg) (tea.Model, tea.Cmd) {
+	m.dragInProgress = false
+	if !m.dragMoved {
+		m.clearDragSelection()
+		return m, nil
+	}
+
+	loRow, loCol, hiRow, hiCol := m.selectionRange()
+	if loRow < 0 {
+		loRow = 0
+	}
+	if hiRow >= len(m.plainLogLines) {
+		hiRow = len(m.plainLogLines) - 1
+	}
+
+	// Build the plain-text payload. For each row, slice plainLogLines[row]
+	// by display columns, and strip trailing whitespace (the viewport
+	// bottom-aligns content with padded-right rows).
+	parts := make([]string, 0, hiRow-loRow+1)
+	for r := loRow; r <= hiRow; r++ {
+		line := m.plainLogLines[r]
+		lineW := runewidth.StringWidth(line)
+		from, to := 0, lineW
+		if r == loRow {
+			from = loCol
+		}
+		if r == hiRow {
+			to = hiCol
+		}
+		if from > lineW {
+			from = lineW
+		}
+		if to > lineW {
+			to = lineW
+		}
+		parts = append(parts, strings.TrimRight(plainSliceByCols(line, from, to), " \t"))
+	}
+	text := strings.Join(parts, "\n")
+	rowCount := hiRow - loRow + 1
+	label := "copied 1 line to clipboard"
+	if rowCount != 1 {
+		label = fmt.Sprintf("copied %d lines to clipboard", rowCount)
+	}
+
+	m.refreshViewport()
+	return m, tea.Batch(
+		emitOSC52(text),
+		m.alert.NewAlertCmd(bubbleup.InfoKey, label),
+	)
+}
+
+// emitOSC52 returns a Cmd that writes the OSC 52 clipboard escape to stdout.
+// Supported by Ghostty, iTerm2, Kitty, Alacritty, WezTerm, recent Terminal.app;
+// silent no-op on terminals that don't. Altscreen is active, but OSC sequences
+// are out-of-band and don't interfere with bubbletea's rendered frame.
+func emitOSC52(text string) tea.Cmd {
+	return func() tea.Msg {
+		enc := base64.StdEncoding.EncodeToString([]byte(text))
+		_, _ = os.Stdout.WriteString("\x1b]52;c;" + enc + "\x07")
+		return nil
+	}
 }
 
 func (m *Model) handlePaste(raw string) (tea.Model, tea.Cmd) {
@@ -404,11 +622,51 @@ func (m *Model) handlePaste(raw string) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// Motion and release while a drag is in progress should fire regardless
+	// of the reported Button — some terminals set it to MouseButtonNone
+	// during held-drag motion, which would otherwise drop the events here.
+	if m.dragInProgress {
+		switch msg.Action {
+		case tea.MouseActionMotion:
+			return m.handleDragMotion(msg)
+		case tea.MouseActionRelease:
+			return m.handleDragRelease(msg)
+		}
+	}
+
 	switch msg.Button {
 	case tea.MouseButtonLeft:
 		if msg.Action != tea.MouseActionPress {
 			return m, nil
 		}
+
+		// Press inside the message-log rect starts a drag. Any prior persisted
+		// selection is cleared (and the viewport re-rendered so the highlight
+		// disappears immediately). The press may still turn out to be a click
+		// if no motion fires before release.
+		if m.inMessageLogRect(msg.X, msg.Y) {
+			if m.dragActive {
+				m.clearDragSelection()
+				m.refreshViewport()
+			}
+			m.dragInProgress = true
+			m.dragMoved = false
+			row := m.screenRowToContentRow(msg.Y)
+			col := m.screenColToContentCol(msg.X)
+			m.dragStartRow = row
+			m.dragStartCol = col
+			m.dragEndRow = row
+			m.dragEndCol = col
+			return m, nil
+		}
+
+		// Press outside the message log clears any persisted selection and
+		// falls through to the existing zone cascade.
+		if m.dragActive {
+			m.clearDragSelection()
+			m.refreshViewport()
+		}
+
 		// Toggle log panel.
 		if zone.Get(ZoneLogToggle).InBounds(msg) {
 			m.logVisible = !m.logVisible
@@ -647,6 +905,7 @@ func (m *Model) refreshViewport() {
 	chat, ok := m.Store.ActiveChat()
 	if !ok {
 		m.log.SetContent("")
+		m.plainLogLines = nil
 		return
 	}
 	inner := m.logInnerWidth()
@@ -660,6 +919,54 @@ func (m *Model) refreshViewport() {
 			content = strings.Repeat("\n", m.log.Height-lines) + content
 		}
 	}
+
+	// Capture a plain-text mirror for drag-select. Bubblezone markers are
+	// CSI-like sequences (\x1b[<n>z) that ansi.Strip removes alongside any
+	// styling escapes, giving us rows that align 1:1 with the viewport's.
+	m.plainLogLines = strings.Split(ansi.Strip(content), "\n")
+
+	// If a drag-selection is active, overlay reverse-video on the selected
+	// column range within each affected row. Preserve styling outside the
+	// selection by using ansi.Cut to slice styled content; the selected span
+	// itself renders plain + reverse (its original colors are lost during
+	// the drag — acceptable, restored when selection clears).
+	if m.dragActive {
+		styledLines := strings.Split(content, "\n")
+		loRow, loCol, hiRow, hiCol := m.selectionRange()
+		if loRow < 0 {
+			loRow = 0
+		}
+		if hiRow >= len(styledLines) {
+			hiRow = len(styledLines) - 1
+		}
+		reverse := lipgloss.NewStyle().Reverse(true)
+		for r := loRow; r <= hiRow && r < len(m.plainLogLines); r++ {
+			plain := m.plainLogLines[r]
+			lineW := runewidth.StringWidth(plain)
+			from, to := 0, lineW
+			if r == loRow {
+				from = loCol
+			}
+			if r == hiRow {
+				to = hiCol
+			}
+			if from > lineW {
+				from = lineW
+			}
+			if to > lineW {
+				to = lineW
+			}
+			if from >= to {
+				continue
+			}
+			left := ansi.Cut(styledLines[r], 0, from)
+			mid := reverse.Render(plainSliceByCols(plain, from, to))
+			right := ansi.Cut(styledLines[r], to, lineW)
+			styledLines[r] = left + mid + right
+		}
+		content = strings.Join(styledLines, "\n")
+	}
+
 	m.log.SetContent(content)
 	m.log.GotoBottom()
 }
@@ -770,7 +1077,10 @@ func (m *Model) View() string {
 		}
 	}
 
-	return zone.Scan(frame)
+	// Resolve bubblezone markers on the base frame, then let bubbleup paint
+	// its alert overlay on top. The alert is a full-frame overlay that
+	// doesn't disturb the underlying layout.
+	return m.alert.Render(zone.Scan(frame))
 }
 
 // renderLogEntryLines renders a single log entry. Collapsed entries get one
