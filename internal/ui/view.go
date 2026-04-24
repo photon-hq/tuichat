@@ -47,7 +47,28 @@ func (m *Model) View() string {
 		typingLine = lipgloss.NewStyle().Foreground(m.theme.TypingColor).Render(" ● agent is typing…")
 	}
 
+	// Render the input container first so we can measure its actual height —
+	// the reply banner, reaction picker, attachment chips, and suggestions
+	// each add rows, and hardcoding "3" in layoutInner pushes the title bar
+	// off the top of the terminal once any of those appear. Give the chat
+	// and log-panel viewports whatever vertical space is left.
 	inputContainer := m.renderInputContainer(chat, hasActive)
+	inputHeight := lipgloss.Height(inputContainer)
+	topHeight := m.height - inputHeight
+	if topHeight < 3 {
+		topHeight = 3
+	}
+	chatHeight := topHeight - 2 // title + typing
+	if chatHeight < 1 {
+		chatHeight = 1
+	}
+	if m.log.Height != chatHeight {
+		m.log.Height = chatHeight
+		m.refreshViewport()
+	}
+	if m.logPanel.Height != topHeight-2 { // minus header + rule
+		m.logPanel.Height = topHeight - 2
+	}
 
 	chatCol := lipgloss.JoinVertical(lipgloss.Left, titleBar, m.log.View(), typingLine)
 
@@ -55,7 +76,6 @@ func (m *Model) View() string {
 	// right. The input container spans both below.
 	var topRow string
 	if m.logVisible {
-		topHeight := 1 /*title*/ + m.log.Height + 1 /*typing*/
 		logCol := m.renderLogColumn(topHeight)
 		topRow = lipgloss.JoinHorizontal(lipgloss.Top, chatCol, logCol)
 	} else {
