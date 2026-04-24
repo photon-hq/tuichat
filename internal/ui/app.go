@@ -23,6 +23,7 @@ import (
 	"go.dalton.dog/bubbleup"
 	zone "github.com/lrstanley/bubblezone"
 	"github.com/mattn/go-runewidth"
+	"github.com/rivo/uniseg"
 
 	"github.com/photon-hq/tuichat/internal/drop"
 	"github.com/photon-hq/tuichat/internal/kitty"
@@ -49,6 +50,7 @@ const (
 	ZoneReplyButton      = "action-reply"
 	ZoneReactButton      = "action-react"
 	ZoneReactionPrefix   = "reaction:" // each quick-pick emoji in the picker
+	ZoneReactionOther    = "reaction-other"
 	ZoneLogToggle        = "log-toggle"
 	ZoneLogEntryPrefix   = "log-entry:" // click a log line to expand/collapse
 )
@@ -58,7 +60,11 @@ const (
 const LogColumnWidth = 40
 
 // reactionPicks is the fixed set of quick-pick reactions shown in the picker.
+// The final "other" slot opens a text field for any emoji.
 var reactionPicks = []string{"👍", "❤️", "😂", "😮", "😢", "🎉"}
+
+// reactionOtherIdx is the picker slot index that triggers custom-emoji input.
+var reactionOtherIdx = len(reactionPicks) // 6
 
 // StoreChangedMsg is sent whenever the RPC server mutates the store and the UI
 // needs to re-render. The server's pump goroutine sends these via Program.Send.
@@ -104,11 +110,13 @@ type Model struct {
 	// Message-select / action state — per active chat. The UI enters select
 	// mode on ↑/↓ or message click, lets the user target one entry, then
 	// either ↩ replies, 🙂 reacts, or Esc cancels.
-	selecting   bool
-	selectedID  string
-	replyingTo  string // non-empty → next submit is a quoted reply
-	reactingTo  string // non-empty → emoji picker open for this entry
-	reactionIdx int
+	selecting       bool
+	selectedID      string
+	replyingTo      string // non-empty → next submit is a quoted reply
+	reactingTo      string // non-empty → emoji picker open for this entry
+	reactionIdx     int
+	emojiInputMode  bool            // picker's "other" slot opened a text field
+	emojiInput      textinput.Model // where the user types a custom emoji
 
 	// Right-hand system log panel. Open by default; toggled via a title-bar
 	// button or Ctrl+Backtick.
@@ -149,6 +157,11 @@ func NewModel(s *store.Store) *Model {
 
 	vp := viewport.New(80, 20)
 
+	emoji := textinput.New()
+	emoji.Placeholder = "type / paste an emoji…"
+	emoji.Prompt = ""
+	emoji.CharLimit = 16 // plenty for a single emoji + ZWJ sequence
+
 	// bubbleup AlertModel: fixed-width bubble at the top-right, using
 	// Unicode prefixes so it renders cleanly without requiring a Nerd Font.
 	alert := bubbleup.NewAlertModel(40, false, copyAlertDuration).
@@ -160,6 +173,7 @@ func NewModel(s *store.Store) *Model {
 		theme:        DefaultTheme,
 		input:        in,
 		log:          vp,
+		emojiInput:   emoji,
 		logVisible:   true,
 		expandedLogs: map[string]bool{},
 		alert:        alert,
@@ -221,16 +235,24 @@ func (m *Model) forwardToAlert(msg tea.Msg) tea.Cmd {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+
+	// Reaction picker has highest priority, even over paste — otherwise
+	// Cmd+V inside the emoji text field would land in the chat input below.
+	if m.reactingTo != "" {
+		if m.emojiInputMode {
+			return m.handleEmojiInputKey(msg, key)
+		}
+		// Picker strip doesn't consume pastes.
+		if msg.Paste {
+			return m, nil
+		}
+		return m.handleReactionKey(msg, key)
+	}
+
 	// Bracketed-paste events come through as a KeyMsg with Paste=true.
 	if msg.Paste {
 		return m.handlePaste(string(msg.Runes))
-	}
-
-	key := msg.String()
-
-	// Reaction picker has priority — it intercepts digits/arrows/enter/esc.
-	if m.reactingTo != "" {
-		return m.handleReactionKey(key)
 	}
 
 	// Always-available shortcuts
@@ -326,12 +348,16 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m *Model) handleReactionKey(key string) (tea.Model, tea.Cmd) {
+func (m *Model) handleReactionKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
+	// Custom-emoji text input submode — route everything through the emoji
+	// textinput except Enter (submit) and Esc (cancel back to picker).
+	if m.emojiInputMode {
+		return m.handleEmojiInputKey(msg, key)
+	}
+
 	switch key {
 	case "esc":
-		m.reactingTo = ""
-		m.reactionIdx = 0
-		m.refreshViewport()
+		m.cancelReactionPicker()
 		return m, nil
 	case "left":
 		if m.reactionIdx > 0 {
@@ -339,16 +365,25 @@ func (m *Model) handleReactionKey(key string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "right":
-		if m.reactionIdx < len(reactionPicks)-1 {
+		if m.reactionIdx < reactionOtherIdx {
 			m.reactionIdx++
 		}
 		return m, nil
 	case "enter":
+		if m.reactionIdx == reactionOtherIdx {
+			m.enterEmojiInputMode()
+			return m, textinput.Blink
+		}
 		m.submitReaction(reactionPicks[m.reactionIdx])
 		return m, nil
 	}
-	if len(key) == 1 && key >= "1" && key <= "6" {
+	// Digit shortcuts 1-6 pick a quick emoji; 7 opens the "other" text input.
+	if len(key) == 1 && key >= "1" && key <= "7" {
 		idx := int(key[0] - '1')
+		if idx == reactionOtherIdx {
+			m.enterEmojiInputMode()
+			return m, textinput.Blink
+		}
 		if idx < len(reactionPicks) {
 			m.submitReaction(reactionPicks[idx])
 		}
@@ -356,11 +391,84 @@ func (m *Model) handleReactionKey(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *Model) handleEmojiInputKey(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc":
+		// Bail out of the text field back to the picker strip.
+		m.emojiInputMode = false
+		m.emojiInput.SetValue("")
+		m.emojiInput.Blur()
+		m.refreshViewport()
+		return m, nil
+	case "enter":
+		text := strings.TrimSpace(m.emojiInput.Value())
+		if text == "" {
+			return m, nil
+		}
+		if !isSingleEmoji(text) {
+			// Reject plain text / multi-emoji input. Keep the field open
+			// so the user can correct; flash an error toast with a hint.
+			m.emojiInput.SetValue("")
+			return m, m.alert.NewAlertCmd(
+				bubbleup.ErrorKey,
+				"only one emoji is allowed",
+			)
+		}
+		m.emojiInputMode = false
+		m.emojiInput.SetValue("")
+		m.emojiInput.Blur()
+		m.submitReaction(text)
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.emojiInput, cmd = m.emojiInput.Update(msg)
+	return m, cmd
+}
+
+// isSingleEmoji validates that the string is a single user-perceived
+// character (one grapheme cluster) made entirely of non-ASCII codepoints.
+// Catches plain text, multiple emojis, "emoji word", etc. Uses
+// rivo/uniseg for proper grapheme-cluster counting so ZWJ / skin-tone /
+// variation-selector sequences still count as one emoji.
+func isSingleEmoji(s string) bool {
+	if s == "" {
+		return false
+	}
+	if uniseg.GraphemeClusterCount(s) != 1 {
+		return false
+	}
+	for _, r := range s {
+		if r < 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *Model) enterEmojiInputMode() {
+	m.emojiInputMode = true
+	m.emojiInput.SetValue("")
+	m.emojiInput.Focus()
+	m.refreshViewport()
+}
+
+func (m *Model) cancelReactionPicker() {
+	m.reactingTo = ""
+	m.reactionIdx = 0
+	m.emojiInputMode = false
+	m.emojiInput.SetValue("")
+	m.emojiInput.Blur()
+	m.refreshViewport()
+}
+
 func (m *Model) submitReaction(emoji string) {
 	chatID := m.Store.ActiveChatID()
 	targetID := m.reactingTo
 	m.reactingTo = ""
 	m.reactionIdx = 0
+	m.emojiInputMode = false
+	m.emojiInput.SetValue("")
+	m.emojiInput.Blur()
 	if chatID == "" || targetID == "" {
 		m.refreshViewport()
 		return
@@ -437,6 +545,9 @@ func (m *Model) clearModalState() {
 	m.replyingTo = ""
 	m.reactingTo = ""
 	m.reactionIdx = 0
+	m.emojiInputMode = false
+	m.emojiInput.SetValue("")
+	m.emojiInput.Blur()
 	m.clearDragSelection()
 }
 
@@ -836,6 +947,10 @@ func (m *Model) dispatchClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				m.submitReaction(emoji)
 				return m, nil
 			}
+		}
+		if zone.Get(ZoneReactionOther).InBounds(msg) {
+			m.enterEmojiInputMode()
+			return m, textinput.Blink
 		}
 	}
 
@@ -1581,6 +1696,21 @@ func (m *Model) renderReplyBanner(chat store.ChatState, width int) string {
 }
 
 func (m *Model) renderReactionPicker(width int) string {
+	// In custom-emoji submode, replace the picker strip with the text field.
+	if m.emojiInputMode {
+		label := lipgloss.NewStyle().
+			Foreground(m.theme.PromptColor).
+			Bold(true).
+			Render("emoji › ")
+		field := lipgloss.NewStyle().
+			Foreground(m.theme.InputColor).
+			Render(m.emojiInput.View())
+		hint := lipgloss.NewStyle().
+			Foreground(m.theme.SystemColor).
+			Render("   Enter submit · Esc back")
+		return lipgloss.NewStyle().MaxWidth(width).Render(label + field + hint)
+	}
+
 	var parts []string
 	for i, emoji := range reactionPicks {
 		label := fmt.Sprintf(" %d %s ", i+1, emoji)
@@ -1596,6 +1726,20 @@ func (m *Model) renderReactionPicker(width int) string {
 		cell := zone.Mark(ZoneReactionPrefix+emoji, st.Render(label))
 		parts = append(parts, cell)
 	}
+	// Trailing "other" cell — clickable, keyboard-reachable via digit 7 or
+	// arrow-right past the last emoji.
+	otherLabel := fmt.Sprintf(" %d other ", reactionOtherIdx+1)
+	var otherStyle lipgloss.Style
+	if m.reactionIdx == reactionOtherIdx {
+		otherStyle = lipgloss.NewStyle().
+			Background(m.theme.SuggestionSelectedBG).
+			Foreground(m.theme.InputColor).
+			Bold(true)
+	} else {
+		otherStyle = lipgloss.NewStyle().Foreground(m.theme.InputColor)
+	}
+	parts = append(parts, zone.Mark(ZoneReactionOther, otherStyle.Render(otherLabel)))
+
 	strip := strings.Join(parts, " ")
 	hint := lipgloss.NewStyle().Foreground(m.theme.SystemColor).Render("  Enter pick · Esc cancel")
 	return lipgloss.NewStyle().MaxWidth(width).Render(strip + hint)
