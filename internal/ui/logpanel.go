@@ -125,7 +125,8 @@ func wrapByWidth(s string, w int) []string {
 
 // renderLogColumn renders the right-hand system-log panel. Height must match
 // the combined height of titleBar + messages viewport + typing line so the
-// input below spans both columns cleanly.
+// input below spans both columns cleanly. The body is rendered into
+// m.logPanel (viewport.Model) so the user can scroll through history.
 func (m *Model) renderLogColumn(height int) string {
 	innerW := LogColumnWidth - 3 // 1 border + 2 padding
 	if innerW < 8 {
@@ -138,7 +139,6 @@ func (m *Model) renderLogColumn(height int) string {
 	headerLabel := lipgloss.NewStyle().
 		Foreground(m.theme.SystemColor).
 		Render("system log")
-	// header: "system log" + right-aligned close button, padded to innerW
 	labelW := runewidth.StringWidth("system log")
 	btnW := runewidth.StringWidth("[×]")
 	pad := innerW - labelW - btnW
@@ -149,39 +149,19 @@ func (m *Model) renderLogColumn(height int) string {
 	rule := lipgloss.NewStyle().Foreground(m.theme.BorderColor).
 		Render(strings.Repeat("─", innerW))
 
-	// Body: tail of entries that fits. Walk newest→oldest, render each to 1
-	// or more lines, stop once we've filled bodyHeight. Reverse for display.
+	// Render ALL entries — viewport clips to its Height and tracks scroll.
 	entries := m.Store.SystemEntries()
-	bodyHeight := height - 3 /*header + rule + bottom margin*/
-	if bodyHeight < 1 {
-		bodyHeight = 1
-	}
-
-	rendered := make([]string, 0, bodyHeight)
-	for i := len(entries) - 1; i >= 0; i-- {
-		e := entries[i]
+	rendered := make([]string, 0, len(entries))
+	for _, e := range entries {
 		if e.Content.Type != "text" {
 			continue
 		}
-		lines := m.renderLogEntryLines(e, innerW)
-		for j := len(lines) - 1; j >= 0; j-- {
-			rendered = append(rendered, lines[j])
-			if len(rendered) >= bodyHeight {
-				break
-			}
-		}
-		if len(rendered) >= bodyHeight {
-			break
-		}
-	}
-	for l, r := 0, len(rendered)-1; l < r; l, r = l+1, r-1 {
-		rendered[l], rendered[r] = rendered[r], rendered[l]
-	}
-	for len(rendered) < bodyHeight {
-		rendered = append([]string{""}, rendered...)
+		rendered = append(rendered, m.renderLogEntryLines(e, innerW)...)
 	}
 
 	// Capture plain-text mirror of body rows for drag-select extraction.
+	// Full content (not just visible tail) — the selection mapper adds
+	// m.logPanel.YOffset when translating screen coords to content rows.
 	m.plainSystemLogLines = make([]string, len(rendered))
 	for i, s := range rendered {
 		m.plainSystemLogLines[i] = ansi.Strip(s)
@@ -224,7 +204,16 @@ func (m *Model) renderLogColumn(height int) string {
 		}
 	}
 
-	inner := strings.Join(append([]string{header, rule}, rendered...), "\n")
+	// Auto-scroll to the bottom on new entries iff the user was already
+	// parked at the bottom. If they've scrolled back to read older entries,
+	// respect that position — don't snap them to the tail.
+	wasAtBottom := m.logPanel.AtBottom()
+	m.logPanel.SetContent(strings.Join(rendered, "\n"))
+	if wasAtBottom {
+		m.logPanel.GotoBottom()
+	}
+
+	inner := strings.Join([]string{header, rule, m.logPanel.View()}, "\n")
 	return lipgloss.NewStyle().
 		Width(LogColumnWidth).
 		Height(height).

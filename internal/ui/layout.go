@@ -50,23 +50,46 @@ func (m *Model) logInnerWidth() int {
 	return w
 }
 
-// layoutInner re-sizes the chat viewport + message input to match the
-// current terminal dimensions. Called on WindowSizeMsg and whenever the log
-// panel is toggled.
+// layoutInner re-sizes the chat viewport, the system-log body viewport, the
+// sidebar viewport, and the message input to match the current terminal
+// dimensions. Called on WindowSizeMsg and whenever the log panel is toggled.
 func (m *Model) layoutInner() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	logWidth := m.chatAreaWidth()
-	if logWidth < 20 {
-		logWidth = 20
+	chatWidth := m.chatAreaWidth()
+	if chatWidth < 20 {
+		chatWidth = 20
 	}
-	logHeight := m.height - 1 /*title*/ - 1 /*typing*/ - 3 /*input container*/
-	if logHeight < 3 {
-		logHeight = 3
+	chatHeight := m.height - 1 /*title*/ - 1 /*typing*/ - 3 /*input container*/
+	if chatHeight < 3 {
+		chatHeight = 3
 	}
-	m.log.Width = logWidth
-	m.log.Height = logHeight
+	m.log.Width = chatWidth
+	m.log.Height = chatHeight
+
+	// Log panel body: header(1) + rule(1) takes the top 2 rows of the log
+	// column; the rest scrolls. Inner width subtracts border + padding*2.
+	logBodyW := LogColumnWidth - 3
+	if logBodyW < 8 {
+		logBodyW = 8
+	}
+	logPanelHeight := 1 /*title*/ + chatHeight + 1 /*typing*/ - 2 /*header + rule*/
+	if logPanelHeight < 1 {
+		logPanelHeight = 1
+	}
+	m.logPanel.Width = logBodyW
+	m.logPanel.Height = logPanelHeight
+
+	// Sidebar middle region: terminal height minus "Chats" header (1) and
+	// two hint rows at the bottom. Width is the sidebar content area.
+	sidebarListH := m.height - 1 /*header*/ - 2 /*hints*/
+	if sidebarListH < 1 {
+		sidebarListH = 1
+	}
+	m.sidebar.Width = SidebarWidth - 1
+	m.sidebar.Height = sidebarListH
+
 	m.input.Width = m.inputWidth() - 2
 	m.refreshViewport()
 }

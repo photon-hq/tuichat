@@ -10,13 +10,15 @@ import (
 )
 
 // handleMouse is the mouse-event entry point. It classifies the event into
-// one of three flows:
+// one of four flows:
 //
 //  1. Drag-in-progress — motion/release route to the drag handlers
 //     regardless of the reported Button (terminals often drop Button to
 //     None during held-drag motion).
-//  2. Left press inside a drag-capable pane — starts a new drag.
-//  3. Everything else — falls through to the zone cascade.
+//  2. Mouse wheel — forwards to the viewport under the cursor (chat, log
+//     panel, or sidebar) so each pane scrolls independently.
+//  3. Left press inside a drag-capable pane — starts a new drag.
+//  4. Everything else — falls through to the zone cascade.
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.dragInProgress {
 		switch msg.Action {
@@ -28,6 +30,9 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.Button {
+	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+		return m.handleWheel(msg)
+
 	case tea.MouseButtonLeft:
 		if msg.Action != tea.MouseActionPress {
 			return m, nil
@@ -58,6 +63,38 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m.dispatchClick(msg)
 	}
 	return m, nil
+}
+
+// handleWheel forwards a mouse-wheel event to the viewport under the cursor
+// — chat column, system-log panel body, or sidebar list — so each pane
+// scrolls independently. Wheel events outside any scrollable pane are a
+// no-op.
+func (m *Model) handleWheel(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case m.inMessageLogRect(msg.X, msg.Y):
+		m.log, _ = m.log.Update(msg)
+	case m.inSystemLogRect(msg.X, msg.Y):
+		m.logPanel, _ = m.logPanel.Update(msg)
+	case m.inSidebarRect(msg.X, msg.Y):
+		m.sidebar, _ = m.sidebar.Update(msg)
+	}
+	return m, nil
+}
+
+// inSidebarRect returns true if (x,y) sits over the scrollable middle of
+// the sidebar — between the "Chats" header row and the hint rows at the
+// bottom. Used to route wheel events to the sidebar viewport.
+func (m *Model) inSidebarRect(x, y int) bool {
+	if x < 0 || x >= SidebarWidth {
+		return false
+	}
+	if y < 1 {
+		return false
+	}
+	if y >= 1+m.sidebar.Height {
+		return false
+	}
+	return true
 }
 
 // startDrag initializes drag-select state for a fresh press. Clearing a

@@ -34,7 +34,7 @@ func (m *Model) View() string {
 	chat, hasActive := m.Store.ActiveChat()
 	chats := m.Store.SortedChats()
 
-	sidebar := zoneMarkSidebar(m.theme, chats, m.Store.ActiveChatID(), m.height)
+	sidebar := m.renderSidebar(chats, m.Store.ActiveChatID(), m.height)
 
 	activeID := ""
 	if hasActive {

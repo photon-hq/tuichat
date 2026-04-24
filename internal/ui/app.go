@@ -78,7 +78,9 @@ type Model struct {
 	Store     *store.Store
 	theme     Theme
 	input     textinput.Model
-	log       viewport.Model
+	log       viewport.Model // chat messages viewport
+	logPanel  viewport.Model // right-hand system-log body viewport
+	sidebar   viewport.Model // left-hand chat list viewport
 	width     int
 	height    int
 	prefix    string
@@ -134,6 +136,16 @@ func NewModel(s *store.Store) *Model {
 	in.CharLimit = 10000
 
 	vp := viewport.New(80, 20)
+	// Disable viewport's built-in keybindings — the app routes keys itself
+	// and we don't want viewport to eat j/k etc. Mouse-wheel scroll still
+	// fires via explicit forwarding in handleMouse.
+	vp.KeyMap = viewport.KeyMap{}
+
+	logVP := viewport.New(LogColumnWidth-3, 10)
+	logVP.KeyMap = viewport.KeyMap{}
+
+	sidebarVP := viewport.New(SidebarWidth-1, 10)
+	sidebarVP.KeyMap = viewport.KeyMap{}
 
 	emoji := textinput.New()
 	emoji.Placeholder = "type / paste an emoji…"
@@ -151,6 +163,8 @@ func NewModel(s *store.Store) *Model {
 		theme:        DefaultTheme,
 		input:        in,
 		log:          vp,
+		logPanel:     logVP,
+		sidebar:      sidebarVP,
 		emojiInput:   emoji,
 		logVisible:   true,
 		expandedLogs: map[string]bool{},

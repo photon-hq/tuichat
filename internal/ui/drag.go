@@ -99,14 +99,19 @@ func (m *Model) inSystemLogRect(x, y int) bool {
 	if len(m.plainSystemLogLines) == 0 {
 		return false
 	}
-	if y >= sysLogFirstBodyScreenRow+len(m.plainSystemLogLines) {
+	// Body region is the viewport's visible Height, regardless of how much
+	// content lives in the full buffer.
+	if y >= sysLogFirstBodyScreenRow+m.logPanel.Height {
 		return false
 	}
 	return true
 }
 
 func (m *Model) screenRowToSystemLogRow(y int) int {
-	row := y - sysLogFirstBodyScreenRow
+	// Offset by the log panel's scroll position so a drag on the visible
+	// row maps to the right content row regardless of how far the user has
+	// scrolled.
+	row := (y - sysLogFirstBodyScreenRow) + m.logPanel.YOffset
 	if row < 0 {
 		row = 0
 	}

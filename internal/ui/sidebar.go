@@ -13,19 +13,29 @@ import (
 // its right border.
 const SidebarWidth = 20
 
-// zoneMarkSidebar renders the sidebar with each chat row wrapped in a
-// bubblezone marker so clicks can route to that chat. Layout:
+// renderSidebar renders the sidebar with each chat row wrapped in a
+// bubblezone marker so clicks can route to that chat. The middle of the
+// column is a viewport.Model that scrolls when there are more chats than
+// fit. Layout:
 //
-//	Chats
-//	> chat-1
-//	  chat-2
-//	  ...
-//	<spacer pushing hints to the bottom>
-//	Ctrl+N new
-//	Ctrl+J/K ↕
-func zoneMarkSidebar(theme Theme, chats []store.ChatState, activeID string, height int) string {
+//	Chats              ← header (row 0, static)
+//	> chat-1           ┐
+//	  chat-2           │ rows fill m.sidebar (viewport)
+//	  ...              │
+//	                   ┘
+//	Ctrl+N new         ← hint row (static, anchored)
+//	Ctrl+J/K ↕         ← hint row (static, anchored)
+func (m *Model) renderSidebar(chats []store.ChatState, activeID string, height int) string {
+	theme := m.theme
+
 	header := lipgloss.NewStyle().Foreground(theme.SystemColor).PaddingLeft(1).Render("Chats")
-	rows := []string{header}
+
+	// Build each chat row as a zone-marked line; feed them all into the
+	// sidebar viewport. Keeping the selected row visible on activeID change
+	// is a nice-to-have but not wired yet — viewport.YOffset stays where
+	// the user last scrolled.
+	rowStyle := lipgloss.NewStyle().PaddingLeft(1).Width(SidebarWidth - 1)
+	rows := make([]string, 0, len(chats))
 	for _, c := range chats {
 		selected := c.ID == activeID
 		arrowStyle := lipgloss.NewStyle().Foreground(theme.SystemColor)
@@ -44,21 +54,21 @@ func zoneMarkSidebar(theme Theme, chats []store.ChatState, activeID string, heig
 		}
 		raw := arrowStyle.Render(arrow) + nameStyle.Render(name)
 		marked := zone.Mark(ZoneSidebarRowPrefix+c.ID, raw)
-		rows = append(rows, lipgloss.NewStyle().PaddingLeft(1).Width(SidebarWidth-1).Render(marked))
+		rows = append(rows, rowStyle.Render(marked))
 	}
+	m.sidebar.SetContent(strings.Join(rows, "\n"))
+
 	hintStyle := lipgloss.NewStyle().Foreground(theme.SystemColor).PaddingLeft(1).Width(SidebarWidth - 1)
 	hints := []string{
 		hintStyle.Render("Ctrl+N new"),
 		hintStyle.Render("Ctrl+J/K ↕"),
 	}
-	top := strings.Join(rows, "\n")
-	bottom := strings.Join(hints, "\n")
-	used := strings.Count(top, "\n") + 1 + strings.Count(bottom, "\n") + 1
-	spacer := ""
-	if height > used {
-		spacer = strings.Repeat("\n", height-used)
-	}
-	column := top + "\n" + spacer + bottom
+
+	column := strings.Join(append(
+		[]string{header, m.sidebar.View()},
+		hints...,
+	), "\n")
+
 	return lipgloss.NewStyle().
 		Width(SidebarWidth).
 		MaxWidth(SidebarWidth + 1). // +1 for the right border
