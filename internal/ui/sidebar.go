@@ -4,66 +4,64 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	zone "github.com/lrstanley/bubblezone"
+
 	"github.com/photon-hq/tuichat/internal/store"
 )
 
+// SidebarWidth is the fixed width of the chat-list column, not including
+// its right border.
 const SidebarWidth = 20
 
-// RenderSidebar returns the left pane. Height is the full interior height
-// so the "Ctrl+N new / Ctrl+J/K ↕" hints pin to the bottom via a spacer.
-func RenderSidebar(theme Theme, chats []store.ChatState, activeID string, height int) string {
-	header := lipgloss.NewStyle().
-		Foreground(theme.SystemColor).
-		PaddingLeft(1).
-		Render("Chats")
-
-	rowStyle := lipgloss.NewStyle().PaddingLeft(1).Width(SidebarWidth - 1)
-	selectedArrowStyle := lipgloss.NewStyle().Foreground(theme.PromptColor)
-	selectedNameStyle := lipgloss.NewStyle().Foreground(theme.UserColor)
-	unselectedArrowStyle := lipgloss.NewStyle().Foreground(theme.SystemColor)
-	unselectedNameStyle := lipgloss.NewStyle().Foreground(theme.InputColor)
-
-	rows := make([]string, 0, len(chats)+1)
-	rows = append(rows, header)
+// zoneMarkSidebar renders the sidebar with each chat row wrapped in a
+// bubblezone marker so clicks can route to that chat. Layout:
+//
+//	Chats
+//	> chat-1
+//	  chat-2
+//	  ...
+//	<spacer pushing hints to the bottom>
+//	Ctrl+N new
+//	Ctrl+J/K ↕
+func zoneMarkSidebar(theme Theme, chats []store.ChatState, activeID string, height int) string {
+	header := lipgloss.NewStyle().Foreground(theme.SystemColor).PaddingLeft(1).Render("Chats")
+	rows := []string{header}
 	for _, c := range chats {
 		selected := c.ID == activeID
-		var arrow, name string
-		id := c.ID
-		if len(id) > SidebarWidth-4 {
-			id = id[:SidebarWidth-5] + "…"
-		}
+		arrowStyle := lipgloss.NewStyle().Foreground(theme.SystemColor)
+		nameStyle := lipgloss.NewStyle().Foreground(theme.InputColor)
 		if selected {
-			arrow = selectedArrowStyle.Render("› ")
-			name = selectedNameStyle.Render(id)
-		} else {
-			arrow = unselectedArrowStyle.Render("  ")
-			name = unselectedNameStyle.Render(id)
+			arrowStyle = lipgloss.NewStyle().Foreground(theme.PromptColor)
+			nameStyle = lipgloss.NewStyle().Foreground(theme.UserColor)
 		}
-		rows = append(rows, rowStyle.Render(arrow+name))
+		name := c.ID
+		if len(name) > SidebarWidth-4 {
+			name = name[:SidebarWidth-5] + "…"
+		}
+		arrow := "  "
+		if selected {
+			arrow = "› "
+		}
+		raw := arrowStyle.Render(arrow) + nameStyle.Render(name)
+		marked := zone.Mark(ZoneSidebarRowPrefix+c.ID, raw)
+		rows = append(rows, lipgloss.NewStyle().PaddingLeft(1).Width(SidebarWidth-1).Render(marked))
 	}
-
-	hintStyle := lipgloss.NewStyle().
-		Foreground(theme.SystemColor).
-		PaddingLeft(1).
-		Width(SidebarWidth - 1)
+	hintStyle := lipgloss.NewStyle().Foreground(theme.SystemColor).PaddingLeft(1).Width(SidebarWidth - 1)
 	hints := []string{
 		hintStyle.Render("Ctrl+N new"),
 		hintStyle.Render("Ctrl+J/K ↕"),
 	}
-
-	// Compose: header + rows, a spacer to push hints to the bottom, then hints.
 	top := strings.Join(rows, "\n")
 	bottom := strings.Join(hints, "\n")
-
 	used := strings.Count(top, "\n") + 1 + strings.Count(bottom, "\n") + 1
 	spacer := ""
 	if height > used {
 		spacer = strings.Repeat("\n", height-used)
 	}
-
 	column := top + "\n" + spacer + bottom
 	return lipgloss.NewStyle().
 		Width(SidebarWidth).
+		MaxWidth(SidebarWidth + 1). // +1 for the right border
 		Height(height).
 		BorderStyle(lipgloss.Border{Right: "│"}).
 		BorderRight(true).
