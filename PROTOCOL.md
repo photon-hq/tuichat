@@ -58,6 +58,7 @@ type Content =
   | { type: "attachment"; name: string; mimeType: string; size?: number; bytes?: string /* base64 */; path?: string }
   | { type: "voice"; name?: string; mimeType: string; size?: number; bytes?: string; path?: string }
   | { type: "contact"; name?: { formatted?: string; first?: string; last?: string; middle?: string; prefix?: string; suffix?: string }; vcard?: string }
+  | { type: "richlink"; url: string; title?: string; summary?: string; cover?: { mimeType?: string; bytes?: string /* base64 */ } }
   | { type: "custom"; raw: unknown };
 ```
 
