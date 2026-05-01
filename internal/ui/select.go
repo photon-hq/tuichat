@@ -92,6 +92,12 @@ func (m *Model) renderReplyBanner(chat store.ChatState, width int) string {
 			quote = "[contact]"
 		case "custom":
 			quote = "[custom]"
+		case "richlink":
+			label := e.Content.Title
+			if label == "" {
+				label = e.Content.Url
+			}
+			quote = "[link] " + label
 		}
 		break
 	}

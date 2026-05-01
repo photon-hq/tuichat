@@ -20,6 +20,10 @@ type Content struct {
 	// Contact fields deliberately passed through via Raw on the client side
 	// when needed. We don't model contact/voice extensively in Go today —
 	// they fall through as custom-like payloads.
+	// Richlink fields (spike: explicit modeling vs Raw passthrough TBD)
+	Url     string `json:"url,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
 
 type CommandDef struct {

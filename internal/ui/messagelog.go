@@ -67,6 +67,17 @@ func renderEntry(theme Theme, e store.LogEntry, allEntries []store.LogEntry, wid
 		attachStyle := lipgloss.NewStyle().Foreground(theme.CustomColor)
 		body = attachStyle.Render("[custom] ") +
 			lipgloss.NewStyle().Foreground(theme.SystemColor).Render(safeStringify(e.Content.Raw))
+	case "richlink":
+		linkStyle := lipgloss.NewStyle().Foreground(theme.PromptColor).Underline(true)
+		label := e.Content.Title
+		if label == "" {
+			label = e.Content.Url
+		}
+		body = lipgloss.NewStyle().Foreground(theme.AttachmentColor).Render("[link] ") + linkStyle.Render(label)
+		if e.Content.Summary != "" {
+			summaryStyle := lipgloss.NewStyle().Foreground(theme.SystemColor)
+			body += "\n  " + summaryStyle.Render(e.Content.Summary)
+		}
 	default:
 		return ""
 	}
@@ -204,6 +215,12 @@ func quoteBody(e store.LogEntry) string {
 		return "[contact]"
 	case "custom":
 		return "[custom]"
+	case "richlink":
+		label := c.Title
+		if label == "" {
+			label = c.Url
+		}
+		return truncateRunes("[link] "+label, 60)
 	}
 	return ""
 }

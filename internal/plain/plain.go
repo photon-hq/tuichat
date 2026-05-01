@@ -156,6 +156,15 @@ func plainFormat(c protocol.Content) string {
 			return "[custom] " + string(raw)
 		}
 		return "[custom]"
+	case "richlink":
+		label := c.Title
+		if label == "" {
+			label = c.Url
+		}
+		if c.Summary != "" {
+			return fmt.Sprintf("[link] %s — %s", label, c.Summary)
+		}
+		return fmt.Sprintf("[link] %s", label)
 	}
 	return ""
 }
