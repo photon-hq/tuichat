@@ -20,6 +20,15 @@ type Content struct {
 	// Contact fields deliberately passed through via Raw on the client side
 	// when needed. We don't model contact/voice extensively in Go today —
 	// they fall through as custom-like payloads.
+	Url     string `json:"url,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	Cover   *Cover `json:"cover,omitempty"`
+}
+
+type Cover struct {
+	MimeType string `json:"mimeType,omitempty"`
+	Bytes    string `json:"bytes,omitempty"` // base64-encoded
 }
 
 type CommandDef struct {

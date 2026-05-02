@@ -9,7 +9,6 @@ import (
 	zone "github.com/lrstanley/bubblezone"
 	"github.com/mattn/go-runewidth"
 
-	"github.com/photon-hq/tuichat/internal/kitty"
 	"github.com/photon-hq/tuichat/internal/store"
 )
 
@@ -311,7 +310,7 @@ func (m *Model) zoneMarkEntries(theme Theme, chat store.ChatState, width int) st
 			rendered = strings.ReplaceAll(rendered, "\x1b[0m", "\x1b[0m"+bgOpen)
 			rendered = selectedBG.Render(rendered)
 		}
-		if e.Content.Type == "attachment" && kitty.SupportedMimeType(e.Content.MimeType) {
+		if entrySupportsPreview(e) {
 			rendered = zone.Mark(ZoneAttachmentPrefix+e.ID, rendered)
 		}
 		// Every entry gets a click-zone so mouse-select works.
