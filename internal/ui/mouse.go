@@ -5,7 +5,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	zone "github.com/lrstanley/bubblezone"
 
-	"github.com/photon-hq/tuichat/internal/kitty"
 	"github.com/photon-hq/tuichat/internal/store"
 )
 
@@ -186,25 +185,22 @@ func (m *Model) dispatchClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Attachment chip clicks → toggle preview.
+	// Image preview chip clicks → toggle the floating preview panel.
 	if active, ok := m.Store.ActiveChat(); ok {
 		for i := range active.Entries {
 			e := active.Entries[i]
-			if e.Content.Type != "attachment" || !kitty.SupportedMimeType(e.Content.MimeType) {
+			preview, ok := previewForEntry(e)
+			if !ok {
 				continue
 			}
 			zoneID := ZoneAttachmentPrefix + e.ID
 			if !zone.Get(zoneID).InBounds(msg) {
 				continue
 			}
-			if hovered := m.Store.HoveredPreview(); hovered != nil && hovered.CacheKey == e.Content.Name {
+			if hovered := m.Store.HoveredPreview(); hovered != nil && hovered.CacheKey == preview.CacheKey {
 				m.Store.SetHoveredPreview(nil)
 			} else {
-				m.Store.SetHoveredPreview(&store.HoveredPreview{
-					CacheKey: e.Content.Name,
-					Name:     e.Content.Name,
-					Path:     e.AttachmentPath,
-				})
+				m.Store.SetHoveredPreview(preview)
 			}
 			return m, nil
 		}

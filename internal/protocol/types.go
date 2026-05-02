@@ -23,6 +23,12 @@ type Content struct {
 	Url     string `json:"url,omitempty"`
 	Title   string `json:"title,omitempty"`
 	Summary string `json:"summary,omitempty"`
+	Cover   *Cover `json:"cover,omitempty"`
+}
+
+type Cover struct {
+	MimeType string `json:"mimeType,omitempty"`
+	Bytes    string `json:"bytes,omitempty"` // base64-encoded
 }
 
 type CommandDef struct {
