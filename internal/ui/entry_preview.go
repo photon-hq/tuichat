@@ -23,9 +23,11 @@ func entrySupportsPreview(e store.LogEntry) bool {
 	case "attachment":
 		return kitty.SupportedMimeType(e.Content.MimeType)
 	case "richlink":
-		return e.Content.Cover != nil &&
-			e.Content.Cover.Bytes != "" &&
-			kitty.SupportedMimeType(e.Content.Cover.MimeType)
+		if e.Content.Cover == nil || !kitty.SupportedMimeType(e.Content.Cover.MimeType) {
+			return false
+		}
+		raw, err := base64.StdEncoding.DecodeString(e.Content.Cover.Bytes)
+		return err == nil && len(raw) > 0
 	default:
 		return false
 	}
@@ -38,7 +40,7 @@ func previewForEntry(e store.LogEntry) (*store.HoveredPreview, bool) {
 			return nil, false
 		}
 		return &store.HoveredPreview{
-			CacheKey: e.Content.Name,
+			CacheKey: attachmentPreviewCacheKey(e),
 			Name:     e.Content.Name,
 			Path:     e.AttachmentPath,
 		}, true
@@ -62,4 +64,14 @@ func previewForEntry(e store.LogEntry) (*store.HoveredPreview, bool) {
 	default:
 		return nil, false
 	}
+}
+
+func attachmentPreviewCacheKey(e store.LogEntry) string {
+	if e.AttachmentPath != "" {
+		return e.AttachmentPath + ":" + e.Content.Name
+	}
+	if e.ID != "" {
+		return e.ID + ":attachment"
+	}
+	return e.Content.Name
 }

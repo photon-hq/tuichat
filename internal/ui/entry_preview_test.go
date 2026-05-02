@@ -39,6 +39,32 @@ func TestPreviewForEntryRichlinkCover(t *testing.T) {
 	}
 }
 
+func TestPreviewForEntryAttachmentCacheKeyUsesPath(t *testing.T) {
+	entry := store.LogEntry{
+		ID:             "msg-1",
+		AttachmentPath: "/tmp/tuichat-a/image.png",
+		Content: protocol.Content{
+			Type:     "attachment",
+			Name:     "image.png",
+			MimeType: "image/png",
+		},
+	}
+
+	preview, ok := previewForEntry(entry)
+	if !ok {
+		t.Fatal("previewForEntry() ok = false, want true")
+	}
+	if preview.CacheKey != "/tmp/tuichat-a/image.png:image.png" {
+		t.Fatalf("CacheKey = %q, want %q", preview.CacheKey, "/tmp/tuichat-a/image.png:image.png")
+	}
+	if preview.Name != "image.png" {
+		t.Fatalf("Name = %q, want %q", preview.Name, "image.png")
+	}
+	if preview.Path != "/tmp/tuichat-a/image.png" {
+		t.Fatalf("Path = %q, want %q", preview.Path, "/tmp/tuichat-a/image.png")
+	}
+}
+
 func TestPreviewForEntryRichlinkCoverRejectsInvalidPreview(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -77,6 +103,9 @@ func TestPreviewForEntryRichlinkCoverRejectsInvalidPreview(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if entrySupportsPreview(store.LogEntry{ID: "msg-1", Content: tt.content}) {
+				t.Fatal("entrySupportsPreview() = true, want false")
+			}
 			if _, ok := previewForEntry(store.LogEntry{ID: "msg-1", Content: tt.content}); ok {
 				t.Fatal("previewForEntry() ok = true, want false")
 			}
