@@ -65,4 +65,4 @@ The `ts-reference/` directory preserves the earlier TypeScript + OpenTUI impleme
 
 ## License
 
-MIT.
+Apache-2.0.
